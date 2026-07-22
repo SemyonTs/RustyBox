@@ -1,0 +1,27 @@
+// =============================================================================
+// false — Return a non-zero exit code.
+// =============================================================================
+// Copyright (c) 2026 Semyon Tsarev
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// project, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Implementation inspired by Toybox (https://landley.net/toybox/)
+// Toybox is copyrighted by Rob Landley, see NOTICE file for license details.
+// =============================================================================
+
+use crate::context::Context;
+use crate::flags::CommandFlags;
+
+/// Entry point for the `false` builtin — always returns 1.
+fn false_main(_ctx: &mut Context) -> u8 {
+    1
+}
+
+register_command!(
+    FALSE_CMD,
+    "false",
+    "",
+    CommandFlags::BIN.bits() | CommandFlags::NOHELP.bits(),
+    false_main
+);

@@ -1,0 +1,39 @@
+Copyright (c) 2026 Semyon Tsarev
+
+This project is licensed under the Mozilla Public License, version 2.0.
+A copy of the license is available in the LICENSE file.
+
+---
+
+This project (RustyBox) is inspired by Toybox (https://landley.net/toybox/,
+https://codeberg.org/landley/toybox).
+
+Toybox is copyrighted by Rob Landley <rob@landley.net> and is licensed under
+the following terms:
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+This project uses the following third-party Rust crates, each of which is
+distributed under the terms of the MIT License or the Apache License,
+Version 2.0 (SPDX: MIT OR Apache-2.0), as published on crates.io:
+
+  - linkme 0.3
+  - libc 0.2
+  - filetime 0.2
+  - chrono 0.4
+  - regex 1
+
+Copies of the MIT and Apache 2.0 license texts may be found at:
+  https://opensource.org/licenses/MIT
+  https://www.apache.org/licenses/LICENSE-2.0

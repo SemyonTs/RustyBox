@@ -1,0 +1,25 @@
+[package]
+name = "rustybox"
+version = "0.1.0"
+edition = "2024"
+description = "Rust implementation of common *nix command-line utilities, inspired by Toybox"
+license = "MPL-2.0"
+authors = ["Semyon Tsarev"]
+
+[[bin]]
+name = "rustybox"
+path = "src/main.rs"
+
+[dependencies]
+linkme = "0.3"
+libc = "0.2"
+filetime = "0.2"
+chrono = "0.4"
+regex = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
