@@ -29,16 +29,16 @@ fn main() {
 
     // Determine the command name: strip any leading path from argv[0], or
     // use argv[1] when the binary is invoked directly as "rustybox".
-    let argv0 = argv[0].rsplit('/').next().unwrap_or(&argv[0]);
-    let (cmd_name, cmd_argv) = if argv0 == "rustybox" || argv0.is_empty() {
-        if argv.len() < 2 {
-            print_help();
-            exit(0);
-        }
-        (argv[1].as_str(), argv[1..].to_vec())
-    } else {
-        (argv0, argv.clone())
-    };
+        let argv0 = argv[0].rsplit('/').next().unwrap_or(&argv[0]);
+        let (cmd_name, cmd_argv) = if argv0.starts_with("rustybox") || argv0.is_empty() {
+            if argv.len() < 2 {
+                print_help();
+                exit(0);
+            }
+            (argv[1].as_str(), argv[1..].to_vec())
+        } else {
+            (argv0, argv.clone())
+        };
 
     match registry::find(cmd_name) {
         Some(def) => {
