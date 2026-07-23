@@ -84,10 +84,7 @@ fn ln_main(ctx: &mut Context) -> u8 {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(src);
-            Path::new(&dest)
-                .join(base)
-                .to_string_lossy()
-                .into_owned()
+            Path::new(&dest).join(base).to_string_lossy().into_owned()
         } else {
             dest.clone()
         };
@@ -140,9 +137,7 @@ fn ln_main(ctx: &mut Context) -> u8 {
 ///
 /// Returns `None` if a relative path cannot be constructed.
 fn relative_path(from: &str, to: &str) -> Option<String> {
-    let from_parent = Path::new(from)
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let from_parent = Path::new(from).parent().unwrap_or_else(|| Path::new("."));
     let from_can = canonicalize_light(from_parent.to_str().unwrap_or("."));
     let to_can = canonicalize_light(to);
 

@@ -30,8 +30,8 @@ use crate::context::Context;
 use crate::flags::CommandFlags;
 use filetime::FileTime;
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -76,8 +76,7 @@ fn cp_main(ctx: &mut Context) -> u8 {
 
     // If multiple sources are given the destination must be an existing
     // directory, or the operation will fail downstream.
-    let dest_is_dir =
-        sources.len() > 1 || fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false);
+    let dest_is_dir = sources.len() > 1 || fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false);
 
     for src in &sources {
         let target = if dest_is_dir {
@@ -132,13 +131,21 @@ fn copy_one(
     // redirect the copy into that directory, preserving the source filename.
     if let Ok(dmeta) = fs::symlink_metadata(dest) {
         if dmeta.is_dir() && !meta.is_dir() {
-            let new_dest =
-                Path::new(dest).join(Path::new(src).file_name().unwrap_or_default());
+            let new_dest = Path::new(dest).join(Path::new(src).file_name().unwrap_or_default());
             return copy_one(
                 src,
                 &new_dest.to_string_lossy(),
-                flag_a, flag_d, flag_f, flag_i, flag_l, flag_n, flag_p, flag_r,
-                flag_s, flag_u, flag_v,
+                flag_a,
+                flag_d,
+                flag_f,
+                flag_i,
+                flag_l,
+                flag_n,
+                flag_p,
+                flag_r,
+                flag_s,
+                flag_u,
+                flag_v,
             );
         }
 
@@ -191,8 +198,8 @@ fn copy_one(
             return Err(format!("skipping directory '{src}'"));
         }
         copy_dir(
-            src, dest, flag_a, flag_d, flag_f, flag_i, flag_l, flag_n, flag_p,
-            flag_r, flag_s, flag_u, flag_v,
+            src, dest, flag_a, flag_d, flag_f, flag_i, flag_l, flag_n, flag_p, flag_r, flag_s,
+            flag_u, flag_v,
         )?;
         return Ok(());
     }
@@ -250,8 +257,17 @@ fn copy_dir(
         copy_one(
             &src_path.to_string_lossy(),
             &dest_path.to_string_lossy(),
-            flag_a, flag_d, flag_f, flag_i, flag_l, flag_n, flag_p, flag_r,
-            flag_s, flag_u, flag_v,
+            flag_a,
+            flag_d,
+            flag_f,
+            flag_i,
+            flag_l,
+            flag_n,
+            flag_p,
+            flag_r,
+            flag_s,
+            flag_u,
+            flag_v,
         )?;
     }
 
@@ -276,12 +292,12 @@ fn preserve_attrs(_src: &str, dest: &str, meta: &fs::Metadata) -> Result<(), Str
     let perm = fs::Permissions::from_mode(meta.mode() & 0o7777);
     let _ = fs::set_permissions(dest, perm);
 
-    let atime = FileTime::from_system_time(
-        std::time::SystemTime::from(UNIX_EPOCH + Duration::from_secs(meta.atime() as u64)),
-    );
-    let mtime = FileTime::from_system_time(
-        std::time::SystemTime::from(UNIX_EPOCH + Duration::from_secs(meta.mtime() as u64)),
-    );
+    let atime = FileTime::from_system_time(std::time::SystemTime::from(
+        UNIX_EPOCH + Duration::from_secs(meta.atime() as u64),
+    ));
+    let mtime = FileTime::from_system_time(std::time::SystemTime::from(
+        UNIX_EPOCH + Duration::from_secs(meta.mtime() as u64),
+    ));
     let _ = filetime::set_file_times(dest, atime, mtime);
 
     // Ownership change is attempted but failures are silently ignored

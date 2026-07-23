@@ -102,12 +102,7 @@ fn format_string(fmt: &str, values: &[String]) -> Result<String, String> {
 }
 
 /// Render a single argument according to the conversion specifier.
-fn format_arg(
-    spec: char,
-    val: &str,
-    width: usize,
-    prec: Option<usize>,
-) -> Result<String, String> {
+fn format_arg(spec: char, val: &str, width: usize, prec: Option<usize>) -> Result<String, String> {
     let s = match spec {
         '%' => "%".to_string(),
 
@@ -171,7 +166,11 @@ fn format_arg(
             }
         }
 
-        'c' => val.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+        'c' => val
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default(),
 
         'b' => interpret_escapes(val),
 

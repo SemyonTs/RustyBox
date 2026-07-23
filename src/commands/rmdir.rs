@@ -24,14 +24,13 @@ use std::fs;
 /// The option string `"<1(ignore-fail-on-non-empty)p(parents)"` requires at
 /// least one positional argument.
 fn rmdir_main(ctx: &mut Context) -> u8 {
-    let opts =
-        match crate::args::parse(ctx, "<1(ignore-fail-on-non-empty)p(parents)") {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("rmdir: {e}");
-                return 1;
-            }
-        };
+    let opts = match crate::args::parse(ctx, "<1(ignore-fail-on-non-empty)p(parents)") {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("rmdir: {e}");
+            return 1;
+        }
+    };
 
     let flag_p = opts.count('p') > 0;
     let ignore_nonempty = opts.count('i') > 0; // longopt ignore-fail-on-non-empty
@@ -60,8 +59,7 @@ fn do_rmdir(name: &str, parents: bool, ignore_nonempty: bool) -> bool {
                 // caller requested `--ignore-fail-on-non-empty`.
                 let is_nonempty = matches!(
                     e.kind(),
-                    std::io::ErrorKind::DirectoryNotEmpty
-                        | std::io::ErrorKind::Other
+                    std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::Other
                 ) && (e.raw_os_error() == Some(39) // ENOTEMPTY on Linux
                     || e.to_string().contains("not empty"));
 

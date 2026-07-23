@@ -110,12 +110,10 @@ fn parse_duration(arg: &str) -> Result<Duration, String> {
         nanos = nanos.saturating_mul(mult);
     }
 
-    let total_nanos = secs
-        .saturating_mul(1_000_000_000)
-        .saturating_add(nanos);
+    let total_nanos = secs.saturating_mul(1_000_000_000).saturating_add(nanos);
 
     Ok(Duration::from_nanos(
-        total_nanos.min(u64::MAX as u128) as u64,
+        total_nanos.min(u64::MAX as u128) as u64
     ))
 }
 

@@ -123,10 +123,7 @@ fn run_cmd(command: &str, args: &[String]) -> Result<(), String> {
     cmd.args(args);
     let status = cmd.status().map_err(|e| e.to_string())?;
     if !status.success() {
-        return Err(format!(
-            "command exited with status {:?}",
-            status.code()
-        ));
+        return Err(format!("command exited with status {:?}", status.code()));
     }
     Ok(())
 }

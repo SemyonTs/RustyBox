@@ -212,9 +212,7 @@ fn process_line<W: Write>(
                 global,
             } => {
                 if *global {
-                    current = pattern
-                        .replace_all(&current, repl.as_str())
-                        .to_string();
+                    current = pattern.replace_all(&current, repl.as_str()).to_string();
                 } else {
                     current = pattern.replace(&current, repl.as_str()).to_string();
                 }
@@ -255,10 +253,4 @@ fn process_line<W: Write>(
     Ok(())
 }
 
-register_command!(
-    SED_CMD,
-    "sed",
-    "ne:f:",
-    CommandFlags::BIN.bits(),
-    sed_main
-);
+register_command!(SED_CMD, "sed", "ne:f:", CommandFlags::BIN.bits(), sed_main);

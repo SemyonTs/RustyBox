@@ -64,10 +64,7 @@ fn wc_main(ctx: &mut Context) -> u8 {
     for file in &files {
         match wc_file(file, flag_l, flag_w, flag_c, flag_m) {
             Ok((l, w, c, ch)) => {
-                print_counts(
-                    file, l, w, c, ch, flag_l, flag_w, flag_c, flag_m,
-                    multiple,
-                );
+                print_counts(file, l, w, c, ch, flag_l, flag_w, flag_c, flag_m, multiple);
                 total_lines += l;
                 total_words += w;
                 total_bytes += c;
@@ -132,9 +129,7 @@ fn wc_file(
 
         loop {
             buf.clear();
-            let n = reader
-                .read_line(&mut buf)
-                .map_err(|e| e.to_string())?;
+            let n = reader.read_line(&mut buf).map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
             }
@@ -202,10 +197,4 @@ fn print_counts(
     }
 }
 
-register_command!(
-    WC_CMD,
-    "wc",
-    "lwc(m)",
-    CommandFlags::BIN.bits(),
-    wc_main
-);
+register_command!(WC_CMD, "wc", "lwc(m)", CommandFlags::BIN.bits(), wc_main);

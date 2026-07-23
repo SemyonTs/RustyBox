@@ -102,10 +102,4 @@ fn env_main(ctx: &mut Context) -> u8 {
     }
 }
 
-register_command!(
-    ENV_CMD,
-    "env",
-    "iu:",
-    CommandFlags::BIN.bits(),
-    env_main
-);
+register_command!(ENV_CMD, "env", "iu:", CommandFlags::BIN.bits(), env_main);

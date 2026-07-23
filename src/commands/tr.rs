@@ -47,8 +47,8 @@ fn tr_main(ctx: &mut Context) -> u8 {
 
     // Build translation table for all 256 bytes.
     let mut table = [0u8; 256];
-    let mut delete = [false; 256];       // fast delete flag
-    let mut squeeze = [false; 256];      // fast squeeze set
+    let mut delete = [false; 256]; // fast delete flag
+    let mut squeeze = [false; 256]; // fast squeeze set
 
     // Determine effective set1: complement if -c
     let effective_set1: Vec<u8> = if flag_c {
@@ -177,10 +177,4 @@ fn expand_set_bytes(s: &str) -> Vec<u8> {
     result
 }
 
-register_command!(
-    TR_CMD,
-    "tr",
-    "ds(c)",
-    CommandFlags::BIN.bits(),
-    tr_main
-);
+register_command!(TR_CMD, "tr", "ds(c)", CommandFlags::BIN.bits(), tr_main);

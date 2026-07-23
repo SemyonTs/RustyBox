@@ -156,11 +156,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     // The remaining arguments are file names (or "-" for stdin).
     let files: Vec<&str> = args_iter.collect();
-    let files: Vec<&str> = if files.is_empty() {
-        vec!["-"]
-    } else {
-        files
-    };
+    let files: Vec<&str> = if files.is_empty() { vec!["-"] } else { files };
 
     let multiple = files.len() > 1 || flag_r;
     let mut found_any = false;
@@ -244,11 +240,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
         return if found_any { 0 } else { 1 };
     }
 
-    if found_any {
-        0
-    } else {
-        1
-    }
+    if found_any { 0 } else { 1 }
 }
 
 /// Recursively collect regular files under `dir`.
@@ -315,9 +307,7 @@ fn grep_file(
 
     loop {
         line_buf.clear();
-        let n = reader
-            .read_line(&mut line_buf)
-            .map_err(|e| e.to_string())?;
+        let n = reader.read_line(&mut line_buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }

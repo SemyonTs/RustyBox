@@ -144,9 +144,7 @@ fn remove_path(
             return true;
         }
 
-        if let Err(e) =
-            remove_dir_all_recursive(path, force, interactive, verbose, stdin, out)
-        {
+        if let Err(e) = remove_dir_all_recursive(path, force, interactive, verbose, stdin, out) {
             if !force {
                 eprintln!("rm: cannot remove '{}': {}", path, e);
             }
@@ -195,19 +193,14 @@ fn remove_dir_all_recursive(
                 // If metadata is unavailable, skip the entry when forcing;
                 // otherwise report the error.
                 if !force {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "permission denied",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::Other, "permission denied"));
                 }
                 continue;
             }
         };
 
         if meta.is_dir() && !meta.file_type().is_symlink() {
-            remove_dir_all_recursive(
-                &child_str, force, interactive, verbose, stdin, out,
-            )?;
+            remove_dir_all_recursive(&child_str, force, interactive, verbose, stdin, out)?;
         } else {
             if interactive && !prompt(&child_str, "file", stdin, out) {
                 continue;
@@ -226,12 +219,7 @@ fn remove_dir_all_recursive(
 /// Ask the user whether to remove a filesystem entry.
 ///
 /// Returns `true` if the user answered affirmatively.
-fn prompt(
-    path: &str,
-    kind: &str,
-    stdin: &io::Stdin,
-    out: &mut impl Write,
-) -> bool {
+fn prompt(path: &str, kind: &str, stdin: &io::Stdin, out: &mut impl Write) -> bool {
     let _ = write!(out, "rm: remove {} '{}'? ", kind, path);
     let _ = out.flush();
 
@@ -240,10 +228,7 @@ fn prompt(
         return false;
     }
 
-    matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    )
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 register_command!(

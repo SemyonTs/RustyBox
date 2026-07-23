@@ -41,11 +41,7 @@ fn test_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    if eval_expr(&args) {
-        0
-    } else {
-        1
-    }
+    if eval_expr(&args) { 0 } else { 1 }
 }
 
 /// Evaluate a complete expression from a list of tokens.
@@ -152,8 +148,25 @@ impl<'a> Parser<'a> {
 fn is_unary(op: &str) -> bool {
     matches!(
         op,
-        "e" | "f" | "d" | "L" | "h" | "r" | "w" | "x" | "s" | "z" | "n"
-            | "c" | "b" | "p" | "u" | "g" | "k" | "O" | "G" | "S"
+        "e" | "f"
+            | "d"
+            | "L"
+            | "h"
+            | "r"
+            | "w"
+            | "x"
+            | "s"
+            | "z"
+            | "n"
+            | "c"
+            | "b"
+            | "p"
+            | "u"
+            | "g"
+            | "k"
+            | "O"
+            | "G"
+            | "S"
     )
 }
 
@@ -183,9 +196,7 @@ fn eval_unary(op: &str, arg: &str) -> bool {
         "x" => fs::metadata(arg)
             .map(|m| m.mode() & 0o100 != 0)
             .unwrap_or(false),
-        "s" => fs::metadata(arg)
-            .map(|m| m.size() > 0)
-            .unwrap_or(false),
+        "s" => fs::metadata(arg).map(|m| m.size() > 0).unwrap_or(false),
         "z" => arg.is_empty(),
         "n" => !arg.is_empty(),
         "c" => fs::metadata(arg)
@@ -250,18 +261,6 @@ fn eval_binary(a: &str, op: &str, b: &str) -> bool {
     }
 }
 
-register_command!(
-    TEST_CMD,
-    "test",
-    "",
-    CommandFlags::BIN.bits(),
-    test_main
-);
+register_command!(TEST_CMD, "test", "", CommandFlags::BIN.bits(), test_main);
 
-register_command!(
-    BRACKET_CMD,
-    "[",
-    "",
-    CommandFlags::BIN.bits(),
-    test_main
-);
+register_command!(BRACKET_CMD, "[", "", CommandFlags::BIN.bits(), test_main);

@@ -81,14 +81,13 @@ fn touch_main(ctx: &mut Context) -> u8 {
     };
 
     // Decide which timestamps to modify based on -a / -m.
-    let (atime_opt, mtime_opt): (Option<i64>, Option<i64>) =
-        if flag_a && !flag_m {
-            (Some(atime), None)
-        } else if flag_m && !flag_a {
-            (None, Some(mtime))
-        } else {
-            (Some(atime), Some(mtime))
-        };
+    let (atime_opt, mtime_opt): (Option<i64>, Option<i64>) = if flag_a && !flag_m {
+        (Some(atime), None)
+    } else if flag_m && !flag_a {
+        (None, Some(mtime))
+    } else {
+        (Some(atime), Some(mtime))
+    };
 
     let mut exit_code: u8 = 0;
     for file in &ctx.optargs {
@@ -153,28 +152,16 @@ fn to_system_time(secs: i64) -> SystemTime {
 }
 
 /// Set access and modification times on a regular file or directory.
-fn set_file_times(
-    file: &str,
-    atime: Option<i64>,
-    mtime: Option<i64>,
-) -> std::io::Result<()> {
-    let a: FileTime =
-        to_system_time(atime.unwrap_or_else(now_secs)).into();
-    let m: FileTime =
-        to_system_time(mtime.unwrap_or_else(now_secs)).into();
+fn set_file_times(file: &str, atime: Option<i64>, mtime: Option<i64>) -> std::io::Result<()> {
+    let a: FileTime = to_system_time(atime.unwrap_or_else(now_secs)).into();
+    let m: FileTime = to_system_time(mtime.unwrap_or_else(now_secs)).into();
     filetime::set_file_times(file, a, m)
 }
 
 /// Set access and modification times on a symlink itself (`-h`).
-fn set_symlink_times(
-    file: &str,
-    atime: Option<i64>,
-    mtime: Option<i64>,
-) -> std::io::Result<()> {
-    let a: FileTime =
-        to_system_time(atime.unwrap_or_else(now_secs)).into();
-    let m: FileTime =
-        to_system_time(mtime.unwrap_or_else(now_secs)).into();
+fn set_symlink_times(file: &str, atime: Option<i64>, mtime: Option<i64>) -> std::io::Result<()> {
+    let a: FileTime = to_system_time(atime.unwrap_or_else(now_secs)).into();
+    let m: FileTime = to_system_time(mtime.unwrap_or_else(now_secs)).into();
     filetime::set_symlink_file_times(file, a, m)
 }
 
@@ -267,14 +254,7 @@ fn to_num(d: &[char]) -> Result<i64, String> {
 
 /// Convert year, month, day, hour, minute, second to seconds since the Unix
 /// epoch (proleptic Gregorian, 1970 onward).
-fn unix_from_ymdhms(
-    y: i64,
-    mo: i64,
-    d: i64,
-    h: i64,
-    mi: i64,
-    s: i64,
-) -> Result<i64, String> {
+fn unix_from_ymdhms(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Result<i64, String> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
         return Err("invalid date".to_string());
     }

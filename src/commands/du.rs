@@ -174,10 +174,4 @@ fn human_size(size: u64) -> String {
     }
 }
 
-register_command!(
-    DU_CMD,
-    "du",
-    "hsad:",
-    CommandFlags::BIN.bits(),
-    du_main
-);
+register_command!(DU_CMD, "du", "hsad:", CommandFlags::BIN.bits(), du_main);

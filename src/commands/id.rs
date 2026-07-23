@@ -88,7 +88,11 @@ fn id_main(ctx: &mut Context) -> u8 {
 
     println!(
         "uid={}({}) gid={}({}) groups={}",
-        uid, uname, gid, gname, gnames.join(",")
+        uid,
+        uname,
+        gid,
+        gname,
+        gnames.join(",")
     );
 
     0
@@ -150,10 +154,4 @@ fn get_groups() -> Vec<u32> {
     }
 }
 
-register_command!(
-    ID_CMD,
-    "id",
-    "ugnG(r)",
-    CommandFlags::BIN.bits(),
-    id_main
-);
+register_command!(ID_CMD, "id", "ugnG(r)", CommandFlags::BIN.bits(), id_main);

@@ -35,7 +35,10 @@ fn link_main(ctx: &mut Context) -> u8 {
     match fs::hard_link(file, newlink) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("link: cannot create link '{}' -> '{}': {}", newlink, file, e);
+            eprintln!(
+                "link: cannot create link '{}' -> '{}': {}",
+                newlink, file, e
+            );
             1
         }
     }

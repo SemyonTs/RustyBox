@@ -187,10 +187,4 @@ fn human(bytes: u64, flag_h: bool) -> String {
     }
 }
 
-register_command!(
-    DF_CMD,
-    "df",
-    "haT",
-    CommandFlags::BIN.bits(),
-    df_main
-);
+register_command!(DF_CMD, "df", "haT", CommandFlags::BIN.bits(), df_main);

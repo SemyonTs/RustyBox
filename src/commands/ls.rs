@@ -110,9 +110,7 @@ fn ls_main(ctx: &mut Context) -> u8 {
                 println!("{arg}:");
             }
 
-            print_entries(
-                &entries, flag_l, flag_h, flag_i, flag_F, flag_1,
-            );
+            print_entries(&entries, flag_l, flag_h, flag_i, flag_F, flag_1);
             continue;
         }
 
@@ -126,8 +124,20 @@ fn ls_main(ctx: &mut Context) -> u8 {
         }
 
         list_dir(
-            arg, flag_l, flag_a, flag_A, flag_R, flag_h, flag_i, flag_F,
-            flag_1, flag_r, flag_S, flag_t, flag_u, &mut exit_code,
+            arg,
+            flag_l,
+            flag_a,
+            flag_A,
+            flag_R,
+            flag_h,
+            flag_i,
+            flag_F,
+            flag_1,
+            flag_r,
+            flag_S,
+            flag_t,
+            flag_u,
+            &mut exit_code,
         );
     }
 
@@ -163,14 +173,13 @@ fn list_dir(
                         let path = entry.path();
                         match fs::symlink_metadata(&path) {
                             Ok(meta) => {
-                                let symlink_target =
-                                    if meta.file_type().is_symlink() {
-                                        fs::read_link(&path)
-                                            .ok()
-                                            .map(|p| p.to_string_lossy().into_owned())
-                                    } else {
-                                        None
-                                    };
+                                let symlink_target = if meta.file_type().is_symlink() {
+                                    fs::read_link(&path)
+                                        .ok()
+                                        .map(|p| p.to_string_lossy().into_owned())
+                                } else {
+                                    None
+                                };
                                 v.push(Entry {
                                     name,
                                     path,
@@ -216,17 +225,13 @@ fn list_dir(
                 let sub = if dir == "." {
                     e.name.clone()
                 } else {
-                    Path::new(dir)
-                        .join(&e.name)
-                        .to_string_lossy()
-                        .into_owned()
+                    Path::new(dir).join(&e.name).to_string_lossy().into_owned()
                 };
                 println!();
                 println!("{}:", sub);
                 list_dir(
-                    &sub, flag_l, flag_a, flag_A, flag_R, flag_h, flag_i,
-                    flag_F, flag_1, flag_r, flag_S, flag_t, flag_u,
-                    exit_code,
+                    &sub, flag_l, flag_a, flag_A, flag_R, flag_h, flag_i, flag_F, flag_1, flag_r,
+                    flag_S, flag_t, flag_u, exit_code,
                 );
             }
         }
@@ -237,13 +242,7 @@ fn list_dir(
 ///
 /// Precedence: `-S` (size) > `-t` (time) > name.  `-r` reverses the final
 /// comparison.
-fn sort_entries(
-    entries: &mut [Entry],
-    flag_r: bool,
-    flag_S: bool,
-    flag_t: bool,
-    flag_u: bool,
-) {
+fn sort_entries(entries: &mut [Entry], flag_r: bool, flag_S: bool, flag_t: bool, flag_u: bool) {
     entries.sort_by(|a, b| {
         let mut ord = std::cmp::Ordering::Equal;
 
@@ -303,11 +302,7 @@ fn print_entries(
         }
     } else {
         // Multi-column layout, targeting an 80-column terminal.
-        let width = entries
-            .iter()
-            .map(|e| e.name.len() + 1)
-            .max()
-            .unwrap_or(1);
+        let width = entries.iter().map(|e| e.name.len() + 1).max().unwrap_or(1);
         let cols = std::cmp::max(1, 80 / width);
 
         for (i, e) in entries.iter().enumerate() {

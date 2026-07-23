@@ -31,14 +31,13 @@ use std::path::{Path, PathBuf};
 ///
 /// Without `-e`, `-f`, or `-m` the raw symlink target is printed.
 fn readlink_main(ctx: &mut Context) -> u8 {
-    let opts =
-        match crate::args::parse(ctx, "<1vnf(canonicalize)emqz[-mef][-qv]") {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("readlink: {e}");
-                return 1;
-            }
-        };
+    let opts = match crate::args::parse(ctx, "<1vnf(canonicalize)emqz[-mef][-qv]") {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("readlink: {e}");
+            return 1;
+        }
+    };
 
     let flag_e = opts.count('e') > 0;
     let flag_f = opts.count('f') > 0;

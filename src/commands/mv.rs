@@ -54,21 +54,24 @@ fn mv_main(ctx: &mut Context) -> u8 {
 
     // Determine whether the destination is an existing directory (unless -T
     // forces file semantics).
-    let dest_is_dir = !flag_T
-        && (sources.len() > 1
-            || fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false));
+    let dest_is_dir =
+        !flag_T && (sources.len() > 1 || fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false));
 
     for src in &sources {
         let target = if dest_is_dir {
-            Path::new(&dest)
-                .join(Path::new(src).file_name().unwrap_or_default())
+            Path::new(&dest).join(Path::new(src).file_name().unwrap_or_default())
         } else {
             PathBuf::from(&dest)
         };
 
-        if let Err(e) =
-            move_one(src, &target.to_string_lossy(), flag_f, flag_i, flag_n, flag_v)
-        {
+        if let Err(e) = move_one(
+            src,
+            &target.to_string_lossy(),
+            flag_f,
+            flag_i,
+            flag_n,
+            flag_v,
+        ) {
             eprintln!("mv: {e}");
             exit_code = 1;
         }
@@ -94,8 +97,7 @@ fn move_one(
     // Resolve destination-directory redirection.
     if let Ok(dmeta) = fs::symlink_metadata(dest) {
         if dmeta.is_dir() && !Path::new(src).is_dir() {
-            let new_dest = Path::new(dest)
-                .join(Path::new(src).file_name().unwrap_or_default());
+            let new_dest = Path::new(dest).join(Path::new(src).file_name().unwrap_or_default());
             return move_one(
                 src,
                 &new_dest.to_string_lossy(),
@@ -115,7 +117,7 @@ fn move_one(
         if flag_i {
             eprint!("mv: overwrite '{}'? ", dest);
             let mut buf = String::new();
-            
+
             std::io::stdin().read_line(&mut buf).ok();
             if !buf.trim().starts_with('y') {
                 return Ok(());
@@ -146,10 +148,4 @@ fn move_one(
     }
 }
 
-register_command!(
-    MV_CMD,
-    "mv",
-    "finTv",
-    CommandFlags::BIN.bits(),
-    mv_main
-);
+register_command!(MV_CMD, "mv", "finTv", CommandFlags::BIN.bits(), mv_main);

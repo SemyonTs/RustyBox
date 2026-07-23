@@ -76,12 +76,7 @@ fn tail_main(ctx: &mut Context) -> u8 {
 ///
 /// When `-f` is active the function blocks and continues to read appended
 /// data indefinitely.
-fn tail_file(
-    file: &str,
-    lines: i64,
-    bytes: i64,
-    flag_f: bool,
-) -> Result<(), String> {
+fn tail_file(file: &str, lines: i64, bytes: i64, flag_f: bool) -> Result<(), String> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
@@ -89,8 +84,7 @@ fn tail_file(
     if file == "-" {
         let stdin = std::io::stdin();
         let reader = stdin.lock();
-        let all: Vec<String> =
-            reader.lines().map(|l| l.unwrap_or_default()).collect();
+        let all: Vec<String> = reader.lines().map(|l| l.unwrap_or_default()).collect();
 
         let start = if lines >= 0 {
             all.len().saturating_sub(lines as usize)
@@ -128,8 +122,7 @@ fn tail_file(
 
     // Line-count mode: read all lines, then emit the tail.
     let reader = BufReader::new(f);
-    let all: Vec<String> =
-        reader.lines().map(|l| l.unwrap_or_default()).collect();
+    let all: Vec<String> = reader.lines().map(|l| l.unwrap_or_default()).collect();
 
     let start = if lines >= 0 {
         all.len().saturating_sub(lines as usize)
@@ -152,8 +145,7 @@ fn tail_file(
 ///
 /// This function never returns voluntarily; it is intended for `-f` mode.
 fn follow(file: &str, out: &mut impl Write) -> Result<(), String> {
-    let mut f =
-        File::open(file).map_err(|e| format!("'{}': {}", file, e))?;
+    let mut f = File::open(file).map_err(|e| format!("'{}': {}", file, e))?;
     f.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
 
     let mut buf = [0u8; 4096];

@@ -72,10 +72,4 @@ fn tee_main(ctx: &mut Context) -> u8 {
     0
 }
 
-register_command!(
-    TEE_CMD,
-    "tee",
-    "ai",
-    CommandFlags::BIN.bits(),
-    tee_main
-);
+register_command!(TEE_CMD, "tee", "ai", CommandFlags::BIN.bits(), tee_main);

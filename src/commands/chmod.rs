@@ -125,8 +125,7 @@ fn chmod_one(
             }
 
             let path = entry.path();
-            let meta2 =
-                fs::symlink_metadata(&path).map_err(|e| format!("'{path:?}': {e}"))?;
+            let meta2 = fs::symlink_metadata(&path).map_err(|e| format!("'{path:?}': {e}"))?;
 
             // Do not descend into symlinks.
             if meta2.file_type().is_symlink() {

@@ -120,7 +120,10 @@ fn sort_main(ctx: &mut Context) -> u8 {
             .into_iter()
             .map(|line| {
                 let sort_key = build_sort_key(&line, flag_n, flag_f, &key);
-                Decorated { key: sort_key, line }
+                Decorated {
+                    key: sort_key,
+                    line,
+                }
             })
             .collect();
 
@@ -149,13 +152,7 @@ fn sort_main(ctx: &mut Context) -> u8 {
 
 /// Compare two sort keys, using the original lines when the key borrows from them.
 #[inline]
-fn compare_keys(
-    a: &SortKey,
-    b: &SortKey,
-    line_a: &str,
-    line_b: &str,
-    reverse: bool,
-) -> Ordering {
+fn compare_keys(a: &SortKey, b: &SortKey, line_a: &str, line_b: &str, reverse: bool) -> Ordering {
     let ord = match (a, b) {
         (SortKey::Numeric(na), SortKey::Numeric(nb)) => {
             na.partial_cmp(nb).unwrap_or(Ordering::Equal)
@@ -177,11 +174,7 @@ fn compare_keys(
         }
     };
 
-    if reverse {
-        ord.reverse()
-    } else {
-        ord
-    }
+    if reverse { ord.reverse() } else { ord }
 }
 
 /// Check equality of two sort keys (for dedup).

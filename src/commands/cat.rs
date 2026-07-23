@@ -183,10 +183,4 @@ fn write_visualized<W: Write>(mut b: u8, v: bool, t: bool, e: bool, out: &mut W)
     Ok(())
 }
 
-register_command!(
-    CAT_CMD,
-    "cat",
-    "uvte",
-    CommandFlags::BIN.bits(),
-    cat_main
-);
+register_command!(CAT_CMD, "cat", "uvte", CommandFlags::BIN.bits(), cat_main);

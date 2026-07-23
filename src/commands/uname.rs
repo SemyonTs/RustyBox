@@ -87,9 +87,7 @@ fn cstr_from_bytes<const N: usize>(bytes: &[libc::c_char; N]) -> String {
     // Find the position of the first NUL (0) byte
     let len = bytes.iter().position(|&c| c == 0).unwrap_or(N);
     // Convert the slice up to that point
-    let bytes_u8: &[u8] = unsafe {
-        std::slice::from_raw_parts(bytes.as_ptr() as *const u8, len)
-    };
+    let bytes_u8: &[u8] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, len) };
     String::from_utf8_lossy(bytes_u8).into_owned()
 }
 

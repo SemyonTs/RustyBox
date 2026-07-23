@@ -196,9 +196,9 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
             if spec.takes_arg {
                 let val = match largs {
                     Some(v) => v,
-                    None => argv_iter.next().ok_or_else(|| {
-                        format!("option --{} requires an argument", lname)
-                    })?,
+                    None => argv_iter
+                        .next()
+                        .ok_or_else(|| format!("option --{} requires an argument", lname))?,
                 };
                 store_arg(&mut parsed, spec, val)?;
             } else {
@@ -222,9 +222,9 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
                     let val = if !rest.is_empty() {
                         rest
                     } else {
-                        argv_iter.next().ok_or_else(|| {
-                            format!("option -{} requires an argument", ch)
-                        })?
+                        argv_iter
+                            .next()
+                            .ok_or_else(|| format!("option -{} requires an argument", ch))?
                     };
                     chars = "".chars().peekable();
                     store_arg(&mut parsed, spec, val)?;
@@ -263,11 +263,7 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
 }
 
 /// Store an option argument value in the appropriate map inside `ParsedOpts`.
-fn store_arg(
-    parsed: &mut ParsedOpts,
-    spec: &OptSpec,
-    val: String,
-) -> Result<(), String> {
+fn store_arg(parsed: &mut ParsedOpts, spec: &OptSpec, val: String) -> Result<(), String> {
     if spec.is_int {
         let n: i64 = val
             .parse()

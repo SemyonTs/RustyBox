@@ -49,7 +49,9 @@ fn pwd_main(ctx: &mut Context) -> u8 {
     // Logical path: prefer $PWD when it is a valid alias for the physical
     // directory and -P was not requested.
     let logical = if !flag_p {
-        env::var("PWD").ok().filter(|pwd_env| is_valid_pwd(&cwd_str, pwd_env))
+        env::var("PWD")
+            .ok()
+            .filter(|pwd_env| is_valid_pwd(&cwd_str, pwd_env))
     } else {
         None
     };

@@ -153,10 +153,4 @@ fn signal_number(name: &str) -> Option<i32> {
     name.parse::<i32>().ok()
 }
 
-register_command!(
-    KILL_CMD,
-    "kill",
-    "ls:",
-    CommandFlags::BIN.bits(),
-    kill_main
-);
+register_command!(KILL_CMD, "kill", "ls:", CommandFlags::BIN.bits(), kill_main);
