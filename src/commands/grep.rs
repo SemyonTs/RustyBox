@@ -64,42 +64,15 @@ fn grep_main(ctx: &mut Context) -> u8 {
     let flag_h = opts.count('h') > 0;
     let flag_H = opts.count('H') > 0;
 
-    // Collect patterns from -e and -f options.
-    let mut patterns: Vec<String> = Vec::new();
+    // Compile patterns directly into Regex objects – no intermediate String storage.
+    let mut regexes: Vec<Regex> = Vec::new();
 
-    if let Some(e) = opts.get_str('e') {
-        if !e.is_empty() {
-            patterns.push(e.to_string());
-        }
-    }
-
-    if let Some(f) = opts.get_str('f') {
-        if let Ok(file) = File::open(f) {
-            for line in BufReader::new(file).lines() {
-                if let Ok(l) = line {
-                    patterns.push(l);
-                }
-            }
-        }
-    }
-
-    // If no -e/-f were given the first positional argument is the pattern.
-    let mut args: Vec<String> = ctx.optargs.clone();
-    if patterns.is_empty() {
-        if args.is_empty() {
-            eprintln!("grep: no pattern specified");
-            return 2;
-        }
-        patterns.push(args.remove(0));
-    }
-
-    // Compile the patterns into regular expressions.
-    let mut regexes = Vec::new();
-    for p in &patterns {
+    // Helper to compile a pattern string with flags applied.
+    let compile_pattern = |raw: &str| -> Result<Regex, String> {
         let re_str = if flag_F {
-            regex::escape(p)
+            regex::escape(raw)
         } else {
-            let mut s = p.clone();
+            let mut s = raw.to_string();
             if flag_w {
                 s = format!(r"\b{}\b", s);
             }
@@ -115,19 +88,78 @@ fn grep_main(ctx: &mut Context) -> u8 {
             Regex::new(&re_str)
         };
 
-        match re {
-            Ok(r) => regexes.push(r),
+        re.map_err(|e| format!("invalid regular expression '{}': {}", raw, e))
+    };
+
+    // Collect patterns from -e options (references borrowed from opts).
+    if let Some(e) = opts.get_str('e') {
+        if !e.is_empty() {
+            match compile_pattern(e) {
+                Ok(re) => regexes.push(re),
+                Err(msg) => {
+                    eprintln!("grep: {msg}");
+                    return 2;
+                }
+            }
+        }
+    }
+
+    // Collect patterns from -f file (read and compile on the fly).
+    if let Some(f) = opts.get_str('f') {
+        let file = match File::open(f) {
+            Ok(f) => f,
             Err(e) => {
-                eprintln!("grep: invalid regular expression '{}': {}", p, e);
+                eprintln!("grep: cannot open '{}': {}", f, e);
+                return 2;
+            }
+        };
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("grep: error reading '{}': {}", f, e);
+                    return 2;
+                }
+            };
+            if line.is_empty() {
+                continue; // skip empty patterns? Toybox does this.
+            }
+            match compile_pattern(&line) {
+                Ok(re) => regexes.push(re),
+                Err(msg) => {
+                    eprintln!("grep: {msg}");
+                    return 2;
+                }
+            }
+        }
+    }
+
+    // If no -e/-f were given, the first positional argument is the pattern.
+    let mut args_iter = ctx.optargs.iter().map(|s| s.as_str());
+    if regexes.is_empty() {
+        let pattern = match args_iter.next() {
+            Some(p) => p,
+            None => {
+                eprintln!("grep: no pattern specified");
+                return 2;
+            }
+        };
+        match compile_pattern(pattern) {
+            Ok(re) => regexes.push(re),
+            Err(msg) => {
+                eprintln!("grep: {msg}");
                 return 2;
             }
         }
     }
 
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
+    // The remaining arguments are file names (or "-" for stdin).
+    let files: Vec<&str> = args_iter.collect();
+    let files: Vec<&str> = if files.is_empty() {
+        vec!["-"]
     } else {
-        args
+        files
     };
 
     let multiple = files.len() > 1 || flag_r;
@@ -137,17 +169,45 @@ fn grep_main(ctx: &mut Context) -> u8 {
     let stdout = std::io::stdout();
     let mut writer = BufWriter::new(stdout.lock());
 
-    for file in &files {
-        let mut file_list = vec![file.clone()];
-
-        // Expand directories recursively when -r is active.
+    for &file in &files {
         if flag_r && file != "-" {
-            file_list = list_files_recursive(file);
-        }
+            // Recursive mode: collect all files under the directory.
+            let file_list = list_files_recursive(file);
+            for f in &file_list {
+                // f is &String, but automatically derefs to &str.
+                match grep_file(
+                    f,
+                    &regexes,
+                    flag_v,
+                    flag_n,
+                    flag_c,
+                    flag_l,
+                    flag_q,
+                    flag_h,
+                    flag_H,
+                    multiple,
+                    &mut writer,
+                ) {
+                    Ok(found) => {
+                        if found {
+                            found_any = true;
+                        }
+                    }
+                    Err(e) => {
+                        if !flag_q {
+                            eprintln!("grep: {e}");
+                        }
+                    }
+                }
 
-        for f in &file_list {
+                if flag_q && found_any {
+                    return 0;
+                }
+            }
+        } else {
+            // Single file or stdin.
             match grep_file(
-                f,
+                file,
                 &regexes,
                 flag_v,
                 flag_n,
@@ -171,7 +231,6 @@ fn grep_main(ctx: &mut Context) -> u8 {
                 }
             }
 
-            // Short-circuit: -q exits immediately on the first match.
             if flag_q && found_any {
                 return 0;
             }
@@ -211,7 +270,8 @@ fn list_files_recursive(dir: &str) -> Vec<String> {
                 Err(_) => continue,
             };
             if meta.is_dir() {
-                result.extend(list_files_recursive(&path.to_string_lossy()));
+                let sub = list_files_recursive(&path.to_string_lossy());
+                result.extend(sub);
             } else if meta.is_file() {
                 result.push(path.to_string_lossy().into_owned());
             }
@@ -264,8 +324,6 @@ fn grep_file(
         line_number += 1;
 
         // Remove trailing newline for accurate output if needed.
-        // But for matching we can leave it; only when we print we may want to
-        // strip it to avoid double newlines (since println! adds one).
         let line = if line_buf.ends_with('\n') {
             &line_buf[..line_buf.len() - 1]
         } else {
