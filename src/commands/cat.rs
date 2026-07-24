@@ -60,8 +60,10 @@ fn cat_main(ctx: &mut Context) -> u8 {
             )
         };
         if let Err(e) = res {
-            eprintln!("cat: stdin: {e}");
-            exit_code = 1;
+            if e.kind() != io::ErrorKind::BrokenPipe {
+                eprintln!("cat: stdin: {e}");
+                exit_code = 1;
+            }
         }
         return exit_code;
     }
@@ -77,8 +79,12 @@ fn cat_main(ctx: &mut Context) -> u8 {
                 )
             };
             if let Err(e) = res {
-                eprintln!("cat: stdin: {e}");
-                exit_code = 1;
+                if e.kind() != io::ErrorKind::BrokenPipe {
+                    eprintln!("cat: stdin: {e}");
+                    exit_code = 1;
+                } else {
+                    break; // Stop on broken pipe
+                }
             }
         } else {
             match File::open(name) {
@@ -91,8 +97,12 @@ fn cat_main(ctx: &mut Context) -> u8 {
                         )
                     };
                     if let Err(e) = res {
-                        eprintln!("cat: {name}: {e}");
-                        exit_code = 1;
+                        if e.kind() != io::ErrorKind::BrokenPipe {
+                            eprintln!("cat: {name}: {e}");
+                            exit_code = 1;
+                        } else {
+                            break; // Stop on broken pipe
+                        }
                     }
                 }
                 Err(e) => {
@@ -105,8 +115,10 @@ fn cat_main(ctx: &mut Context) -> u8 {
 
     // Flush stdout after all operations (in case process didn't fully drain the buffer).
     if let Err(e) = out.flush() {
-        eprintln!("cat: stdout: {e}");
-        exit_code = 1;
+        if e.kind() != io::ErrorKind::BrokenPipe {
+            eprintln!("cat: stdout: {e}");
+            exit_code = 1;
+        }
     }
 
     exit_code
