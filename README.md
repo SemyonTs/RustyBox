@@ -12,7 +12,7 @@ RustyBox provides 37 commands in a single binary, designed for ease of use. It u
 
 Create symlinks to use commands without the `rustybox` prefix (e.g. `rustybox ls` or `rustybox grep`).
 
-## Benchmarks
+## Benchmarks (release v0.1.1)
 
 RustyBox includes several optimizations that make it competitive with established implementations. Below are measurements taken on an Intel Core i7-8550U (frequency locked, performance governor) using `hyperfine` (microsecond precision). RustyBox was built with `RUSTFLAGS="-C target-cpu=generic"`. GNU Coreutils and BusyBox from Arch Linux official repositories, Toybox from AUR.
 
