@@ -26,13 +26,17 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 This project uses the following third-party Rust crates, each of which is
 distributed under the terms of the MIT License or the Apache License,
-Version 2.0 (SPDX: MIT OR Apache-2.0), as published on crates.io:
+Version 2.0 (SPDX: MIT OR Apache-2.0), as published on crates.io or docs.rs:
 
-  - linkme 0.3
-  - libc 0.2
-  - filetime 0.2
-  - chrono 0.4
-  - regex 1
+  - linkme         0.3
+  - libc           0.2
+  - filetime       0.2
+  - chrono         0.4
+  - regex          1
+  - assert_cmd     2.2
+  - predicates     3.1
+  - tempfile       3.27
+  - rstest         0.26
 
 Copies of the MIT and Apache 2.0 license texts may be found at:
   https://opensource.org/licenses/MIT
