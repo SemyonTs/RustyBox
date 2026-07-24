@@ -21,7 +21,7 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 /// Entry point for the `wc` builtin.
 ///
@@ -47,98 +47,123 @@ fn wc_main(ctx: &mut Context) -> u8 {
         flag_c = true;
     }
 
-    let args: Vec<String> = ctx.optargs.clone();
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        args
-    };
-
     let mut total_lines = 0u64;
     let mut total_words = 0u64;
     let mut total_bytes = 0u64;
     let mut total_chars = 0u64;
     let mut exit_code: u8 = 0;
-    let multiple = files.len() > 1;
 
-    for file in &files {
-        match wc_file(file, flag_l, flag_w, flag_c, flag_m) {
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    let mut out_buf = String::with_capacity(64);
+
+    if ctx.optargs.is_empty() {
+        match wc_file("-", flag_m) {
             Ok((l, w, c, ch)) => {
-                print_counts(file, l, w, c, ch, flag_l, flag_w, flag_c, flag_m, multiple);
-                total_lines += l;
-                total_words += w;
-                total_bytes += c;
-                total_chars += ch;
+                print_counts(
+                    "",
+                    l,
+                    w,
+                    c,
+                    ch,
+                    flag_l,
+                    flag_w,
+                    flag_c,
+                    flag_m,
+                    false,
+                    &mut writer,
+                    &mut out_buf,
+                );
             }
             Err(e) => {
                 eprintln!("wc: {e}");
                 exit_code = 1;
             }
         }
+    } else {
+        let multiple = ctx.optargs.len() > 1;
+
+        for file in &ctx.optargs {
+            match wc_file(file, flag_m) {
+                Ok((l, w, c, ch)) => {
+                    print_counts(
+                        file,
+                        l,
+                        w,
+                        c,
+                        ch,
+                        flag_l,
+                        flag_w,
+                        flag_c,
+                        flag_m,
+                        multiple,
+                        &mut writer,
+                        &mut out_buf,
+                    );
+                    total_lines += l;
+                    total_words += w;
+                    total_bytes += c;
+                    total_chars += ch;
+                }
+                Err(e) => {
+                    eprintln!("wc: {e}");
+                    exit_code = 1;
+                }
+            }
+        }
+
+        // Emit a cumulative total line when more than one file was processed.
+        if multiple {
+            print_counts(
+                "total",
+                total_lines,
+                total_words,
+                total_bytes,
+                total_chars,
+                flag_l,
+                flag_w,
+                flag_c,
+                flag_m,
+                false,
+                &mut writer,
+                &mut out_buf,
+            );
+        }
     }
 
-    // Emit a cumulative total line when more than one file was processed.
-    if multiple {
-        print_counts(
-            "total",
-            total_lines,
-            total_words,
-            total_bytes,
-            total_chars,
-            flag_l,
-            flag_w,
-            flag_c,
-            flag_m,
-            false,
-        );
-    }
-
+    writer.flush().ok();
     exit_code
 }
 
 /// Count lines, words, bytes, and optionally characters in a single file
 /// (or stdin when `file == "-"`).
-fn wc_file(
-    file: &str,
-    _flag_l: bool,
-    _flag_w: bool,
-    _flag_c: bool,
-    flag_m: bool,
-) -> Result<(u64, u64, u64, u64), String> {
+fn wc_file(file: &str, flag_m: bool) -> Result<(u64, u64, u64, u64), String> {
     let mut lines = 0u64;
     let mut words = 0u64;
     let mut bytes = 0u64;
     let mut chars = 0u64;
 
-    if file == "-" {
-        let stdin = std::io::stdin();
-        let reader = stdin.lock();
-        for line in reader.lines() {
-            let line = line.map_err(|e| e.to_string())?;
-            lines += 1;
-            words += count_words(&line);
-            bytes += line.len() as u64 + 1; // +1 for the newline character.
-            if flag_m {
-                chars += line.chars().count() as u64 + 1;
-            }
-        }
+    let mut reader: Box<dyn BufRead> = if file == "-" {
+        Box::new(std::io::stdin().lock())
     } else {
         let f = File::open(file).map_err(|e| format!("'{}': {}", file, e))?;
-        let mut reader = BufReader::new(f);
-        let mut buf = String::new();
+        Box::new(BufReader::new(f))
+    };
 
-        loop {
-            buf.clear();
-            let n = reader.read_line(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            lines += 1;
-            words += count_words(&buf);
-            bytes += n as u64;
-            if flag_m {
-                chars += buf.chars().count() as u64;
-            }
+    // Reusable line buffer — avoids allocating a new String for every line.
+    let mut line_buf = String::with_capacity(4096);
+
+    loop {
+        line_buf.clear();
+        let n = reader.read_line(&mut line_buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        lines += 1;
+        words += count_words(&line_buf);
+        bytes += n as u64;
+        if flag_m {
+            chars += line_buf.chars().count() as u64;
         }
     }
 
@@ -150,8 +175,8 @@ fn count_words(s: &str) -> u64 {
     let mut count = 0u64;
     let mut in_word = false;
 
-    for c in s.chars() {
-        if c.is_whitespace() {
+    for &b in s.as_bytes() {
+        if b.is_ascii_whitespace() {
             in_word = false;
         } else if !in_word {
             in_word = true;
@@ -162,7 +187,7 @@ fn count_words(s: &str) -> u64 {
     count
 }
 
-/// Print one row of counts.
+/// Print one row of counts directly into a reusable buffer.
 fn print_counts(
     file: &str,
     l: u64,
@@ -174,27 +199,40 @@ fn print_counts(
     flag_c: bool,
     flag_m: bool,
     show_file: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+    out_buf: &mut String,
 ) {
-    let mut parts = Vec::new();
+    out_buf.clear();
+    let mut first = true;
+
+    let mut push = |val: u64| {
+        use std::fmt::Write;
+        if !first {
+            out_buf.push(' ');
+        }
+        write!(out_buf, "{:>7}", val).unwrap();
+        first = false;
+    };
 
     if flag_l {
-        parts.push(format!("{:>7}", l));
+        push(l);
     }
     if flag_w {
-        parts.push(format!("{:>7}", w));
+        push(w);
     }
     if flag_m {
-        parts.push(format!("{:>7}", ch));
+        push(ch);
     }
     if flag_c {
-        parts.push(format!("{:>7}", c));
+        push(c);
     }
 
     if show_file {
-        println!("{} {}", parts.join(" "), file);
-    } else {
-        println!("{}", parts.join(" "));
+        out_buf.push(' ');
+        out_buf.push_str(file);
     }
+
+    writeln!(writer, "{out_buf}").ok();
 }
 
 register_command!(WC_CMD, "wc", "lwc(m)", CommandFlags::BIN.bits(), wc_main);

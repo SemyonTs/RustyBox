@@ -36,7 +36,7 @@ pub struct CommandDef {
 impl CommandDef {
     /// Return the flags field as a typed `CommandFlags` value.
     pub fn command_flags(&self) -> CommandFlags {
-        CommandFlags::from_bits_truncate(self.flags)
+        CommandFlags(self.flags)
     }
 }
 
@@ -44,17 +44,20 @@ impl CommandDef {
 ///
 /// Analogous to `toy_find()` in toybox/main.c:25.
 pub fn find(name: &str) -> Option<&'static CommandDef> {
-    let mut sorted: Vec<&CommandDef> = COMMANDS.iter().collect();
-    sorted.sort_by(|a, b| a.name.cmp(b.name));
-    sorted
-        .binary_search_by(|c| c.name.cmp(name))
-        .ok()
-        .map(|i| sorted[i])
+    // Since COMMANDS is not guaranteed to be sorted at link time, sort a
+    // lightweight index instead of copying full CommandDef structs.
+    let mut indices: Vec<usize> = (0..COMMANDS.len()).collect();
+    indices.sort_unstable_by_key(|&i| COMMANDS[i].name);
+
+    match indices.binary_search_by_key(&name, |&i| COMMANDS[i].name) {
+        Ok(idx) => Some(&COMMANDS[indices[idx]]),
+        Err(_) => None,
+    }
 }
 
 /// Return a sorted list of all registered commands.
 pub fn all() -> Vec<&'static CommandDef> {
     let mut list: Vec<&CommandDef> = COMMANDS.iter().collect();
-    list.sort_by(|a, b| a.name.cmp(b.name));
+    list.sort_unstable_by_key(|c| c.name);
     list
 }

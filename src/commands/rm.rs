@@ -19,7 +19,7 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 /// Entry point for the `rm` builtin.
@@ -48,7 +48,8 @@ fn rm_main(ctx: &mut Context) -> u8 {
 
     let mut exit_code: u8 = 0;
     let stdin = io::stdin();
-    let mut out = io::stdout();
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
 
     for arg in &ctx.optargs {
         // Refuse to remove the root directory.
@@ -79,13 +80,13 @@ fn rm_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    let _ = out.flush();
+    out.flush().ok();
     exit_code
 }
 
 /// Return `true` if a filesystem entry exists at `p`.
 fn path_exists(p: &str) -> bool {
-    Path::new(p).exists() || Path::new(p).symlink_metadata().is_ok()
+    fs::symlink_metadata(p).is_ok()
 }
 
 /// Remove a single filesystem entry.
@@ -115,15 +116,13 @@ fn remove_path(
     let is_symlink = meta.file_type().is_symlink();
 
     // POSIX forbids removing `.` and `..` even when named explicitly.
-    let name = Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    if name == "." || name == ".." {
-        if !force {
-            eprintln!("rm: cannot remove '{}': it is '.' or '..'", path);
+    if let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) {
+        if name == "." || name == ".." {
+            if !force {
+                eprintln!("rm: cannot remove '{}': it is '.' or '..'", path);
+            }
+            return force;
         }
-        return force;
     }
 
     // Interactive prompt for non-directories and symlinks.
@@ -185,13 +184,9 @@ fn remove_dir_all_recursive(
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let child = entry.path();
-        let child_str = child.to_string_lossy().into_owned();
-
         let meta = match entry.metadata() {
             Ok(m) => m,
             Err(_) => {
-                // If metadata is unavailable, skip the entry when forcing;
-                // otherwise report the error.
                 if !force {
                     return Err(io::Error::new(io::ErrorKind::Other, "permission denied"));
                 }
@@ -200,9 +195,12 @@ fn remove_dir_all_recursive(
         };
 
         if meta.is_dir() && !meta.file_type().is_symlink() {
-            remove_dir_all_recursive(&child_str, force, interactive, verbose, stdin, out)?;
+            // Use to_str() to borrow when possible; fall back to to_string_lossy only if needed.
+            let child_str = child.to_str().unwrap_or_default();
+            remove_dir_all_recursive(child_str, force, interactive, verbose, stdin, out)?;
         } else {
-            if interactive && !prompt(&child_str, "file", stdin, out) {
+            let child_str = child.to_str().unwrap_or_default();
+            if interactive && !prompt(child_str, "file", stdin, out) {
                 continue;
             }
             fs::remove_file(&child)?;

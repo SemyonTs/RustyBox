@@ -37,29 +37,35 @@ fn echo_main(ctx: &mut Context) -> u8 {
     let no_newline = opts.count('n') > 0;
     let interpret = opts.count('e') > 0;
 
-    // Build the output string by joining all arguments with a single space.
-    let mut out = String::new();
+    let stdout = std::io::stdout();
+    let mut writer = std::io::BufWriter::new(stdout.lock());
+
+    // Write all arguments separated by a single space.
     for (i, arg) in ctx.optargs.iter().enumerate() {
         if i > 0 {
-            out.push(' ');
+            use std::io::Write;
+            writer.write_all(b" ").ok();
         }
         if interpret {
-            push_interpreted(&mut out, arg);
+            write_interpreted(&mut writer, arg);
         } else {
-            out.push_str(arg);
+            use std::io::Write;
+            writer.write_all(arg.as_bytes()).ok();
         }
     }
 
-    if no_newline {
-        print!("{out}");
-    } else {
-        println!("{out}");
+    if !no_newline {
+        use std::io::Write;
+        writer.write_all(b"\n").ok();
     }
+
+    use std::io::Write;
+    writer.flush().ok();
 
     0
 }
 
-/// Append `s` to `out`, expanding a limited set of C-style backslash escapes.
+/// Write `s` to `writer`, expanding a limited set of C-style backslash escapes.
 ///
 /// Recognised sequences:
 ///   `\n`  — newline
@@ -69,24 +75,28 @@ fn echo_main(ctx: &mut Context) -> u8 {
 ///
 /// An unrecognised escape character is reproduced literally (the backslash
 /// is preserved).
-fn push_interpreted(out: &mut String, s: &str) {
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some('\\') => out.push('\\'),
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => out.push('\\'),
+fn write_interpreted(writer: &mut impl std::io::Write, s: &str) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            let b = match bytes[i] {
+                b'n' => Some(b'\n'),
+                b't' => Some(b'\t'),
+                b'r' => Some(b'\r'),
+                b'\\' => Some(b'\\'),
+                _ => None,
+            };
+            if let Some(escaped) = b {
+                writer.write_all(&[escaped]).ok();
+            } else {
+                writer.write_all(&[b'\\', bytes[i]]).ok();
             }
         } else {
-            out.push(c);
+            writer.write_all(&[bytes[i]]).ok();
         }
+        i += 1;
     }
 }
 

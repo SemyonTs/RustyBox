@@ -21,22 +21,21 @@ use crate::flags::CommandFlags;
 /// The first positional argument is the format string; subsequent arguments
 /// supply values for the conversion specifiers.
 fn printf_main(ctx: &mut Context) -> u8 {
-    let args: Vec<String> = ctx.optargs.clone();
-    if args.is_empty() {
+    if ctx.optargs.is_empty() {
         eprintln!("printf: missing format string");
         return 1;
     }
 
-    let format = &args[0];
-    let values = &args[1..];
+    let format = &ctx.optargs[0];
+    let values = &ctx.optargs[1..];
 
     match format_string(format, values) {
         Ok(output) => {
-            print!("{}", output);
+            print!("{output}");
             0
         }
         Err(e) => {
-            eprintln!("printf: {}", e);
+            eprintln!("printf: {e}");
             1
         }
     }
@@ -47,53 +46,63 @@ fn printf_main(ctx: &mut Context) -> u8 {
 /// Returns the fully rendered string or a description of the first
 /// formatting error encountered.
 fn format_string(fmt: &str, values: &[String]) -> Result<String, String> {
-    let mut result = String::new();
-    let chars: Vec<char> = fmt.chars().collect();
+    let mut result = String::with_capacity(fmt.len() + values.len() * 16);
+    let bytes = fmt.as_bytes();
     let mut i = 0;
     let mut arg_idx = 0;
 
-    while i < chars.len() {
-        if chars[i] == '%' && i + 1 < chars.len() {
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 1 < bytes.len() {
             i += 1;
 
             // Consume optional flags (subset: #, 0, -, space, +).
-            while i < chars.len() && "#0- +".contains(chars[i]) {
+            while i < bytes.len() && b"#0- +".contains(&bytes[i]) {
                 i += 1;
             }
 
             // Optional minimum field width.
-            let mut width = 0;
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                width = width * 10 + chars[i].to_digit(10).unwrap();
+            let mut width = 0u32;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                width = width * 10 + (bytes[i] - b'0') as u32;
                 i += 1;
             }
 
             // Optional precision.
             let mut prec: Option<usize> = None;
-            if i < chars.len() && chars[i] == '.' {
+            if i < bytes.len() && bytes[i] == b'.' {
                 i += 1;
-                let mut p = 0;
-                while i < chars.len() && chars[i].is_ascii_digit() {
-                    p = p * 10 + chars[i].to_digit(10).unwrap();
+                let mut p = 0u32;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    p = p * 10 + (bytes[i] - b'0') as u32;
                     i += 1;
                 }
                 prec = Some(p as usize);
             }
 
-            if i >= chars.len() {
+            if i >= bytes.len() {
                 return Err("unterminated % specifier".to_string());
             }
 
-            let spec = chars[i];
+            let spec = bytes[i] as char;
             i += 1;
 
-            let val = values.get(arg_idx).cloned().unwrap_or_default();
+            // %% does not consume an argument.
+            if spec == '%' {
+                result.push('%');
+                continue;
+            }
+
+            let val = if arg_idx < values.len() {
+                &values[arg_idx]
+            } else {
+                ""
+            };
             arg_idx += 1;
 
-            let formatted = format_arg(spec, &val, width as usize, prec)?;
+            let formatted = format_arg(spec, val, width as usize, prec)?;
             result.push_str(&formatted);
         } else {
-            result.push(chars[i]);
+            result.push(bytes[i] as char);
             i += 1;
         }
     }
@@ -104,8 +113,6 @@ fn format_string(fmt: &str, values: &[String]) -> Result<String, String> {
 /// Render a single argument according to the conversion specifier.
 fn format_arg(spec: char, val: &str, width: usize, prec: Option<usize>) -> Result<String, String> {
     let s = match spec {
-        '%' => "%".to_string(),
-
         's' => {
             if let Some(p) = prec {
                 val.chars().take(p).collect()
@@ -166,11 +173,13 @@ fn format_arg(spec: char, val: &str, width: usize, prec: Option<usize>) -> Resul
             }
         }
 
-        'c' => val
-            .chars()
-            .next()
-            .map(|c| c.to_string())
-            .unwrap_or_default(),
+        'c' => {
+            // %c with empty argument prints nothing (not even NUL).
+            val.chars()
+                .next()
+                .map(|c| c.to_string())
+                .unwrap_or_default()
+        }
 
         'b' => interpret_escapes(val),
 
@@ -187,35 +196,30 @@ fn format_arg(spec: char, val: &str, width: usize, prec: Option<usize>) -> Resul
     }
 }
 
-/// Map a backslash-escaped character to its literal value.
-fn interpret_escape(c: char) -> char {
-    match c {
-        'n' => '\n',
-        't' => '\t',
-        'r' => '\r',
-        'b' => '\x08',
-        'f' => '\x0c',
-        'v' => '\x0b',
-        '0' => '\0',
-        '\\' => '\\',
-        other => other,
-    }
-}
-
 /// Expand C-style backslash escapes in a string (for the `%b` specifier).
 fn interpret_escapes(s: &str) -> String {
-    let mut result = String::new();
-    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
     let mut i = 0;
 
-    while i < chars.len() {
-        if chars[i] == '\\' && i + 1 < chars.len() {
-            result.push(interpret_escape(chars[i + 1]));
-            i += 2;
-        } else {
-            result.push(chars[i]);
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
             i += 1;
+            result.push(match bytes[i] {
+                b'n' => '\n',
+                b't' => '\t',
+                b'r' => '\r',
+                b'b' => '\x08',
+                b'f' => '\x0c',
+                b'v' => '\x0b',
+                b'0' => '\0',
+                b'\\' => '\\',
+                other => other as char,
+            });
+        } else {
+            result.push(bytes[i] as char);
         }
+        i += 1;
     }
 
     result
@@ -224,7 +228,17 @@ fn interpret_escapes(s: &str) -> String {
 /// Wrap a string in single quotes with interior quotes escaped for shell
 /// consumption (the `%q` specifier).
 fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+    let mut result = String::with_capacity(s.len() + 8);
+    result.push('\'');
+    for &b in s.as_bytes() {
+        if b == b'\'' {
+            result.push_str("'\\''");
+        } else {
+            result.push(b as char);
+        }
+    }
+    result.push('\'');
+    result
 }
 
 register_command!(

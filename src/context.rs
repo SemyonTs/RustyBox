@@ -27,6 +27,7 @@ pub struct Context {
     /// option in the option string, rightmost = bit 0).
     pub optflags: u64,
     /// Positional arguments remaining after option parsing.
+    /// Reused across commands via `clear()` to avoid reallocation.
     pub optargs: Vec<String>,
     /// Exit code to be returned to the shell.
     pub exitval: u8,

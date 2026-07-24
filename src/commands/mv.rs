@@ -20,7 +20,7 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Entry point for the `mv` builtin.
 ///
@@ -41,37 +41,41 @@ fn mv_main(ctx: &mut Context) -> u8 {
     let flag_v = opts.count('v') > 0;
     let flag_T = opts.count('T') > 0;
 
-    let mut args: Vec<String> = ctx.optargs.clone();
-    if args.len() < 2 {
+    let n = ctx.optargs.len();
+    if n < 2 {
         eprintln!("mv: not enough arguments");
         return 1;
     }
 
-    let dest = args.pop().unwrap();
-    let sources = args;
+    // Last argument is destination, all preceding are sources.
+    let sources = &ctx.optargs[..n - 1];
+    let dest = &ctx.optargs[n - 1];
 
     let mut exit_code: u8 = 0;
 
     // Determine whether the destination is an existing directory (unless -T
     // forces file semantics).
     let dest_is_dir =
-        !flag_T && (sources.len() > 1 || fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false));
+        !flag_T && (sources.len() > 1 || fs::metadata(dest).map(|m| m.is_dir()).unwrap_or(false));
 
-    for src in &sources {
-        let target = if dest_is_dir {
-            Path::new(&dest).join(Path::new(src).file_name().unwrap_or_default())
+    // Pre-allocate reusable buffer for destination path construction.
+    let mut target_buf = String::with_capacity(256);
+
+    for src in sources {
+        target_buf.clear();
+        if dest_is_dir {
+            target_buf.push_str(dest);
+            target_buf.push('/');
+            if let Some(base) = Path::new(src).file_name().and_then(|n| n.to_str()) {
+                target_buf.push_str(base);
+            } else {
+                target_buf.push_str(src);
+            }
         } else {
-            PathBuf::from(&dest)
+            target_buf.push_str(dest);
         };
 
-        if let Err(e) = move_one(
-            src,
-            &target.to_string_lossy(),
-            flag_f,
-            flag_i,
-            flag_n,
-            flag_v,
-        ) {
+        if let Err(e) = move_one(src, &target_buf, flag_f, flag_i, flag_n, flag_v) {
             eprintln!("mv: {e}");
             exit_code = 1;
         }
@@ -97,10 +101,14 @@ fn move_one(
     // Resolve destination-directory redirection.
     if let Ok(dmeta) = fs::symlink_metadata(dest) {
         if dmeta.is_dir() && !Path::new(src).is_dir() {
-            let new_dest = Path::new(dest).join(Path::new(src).file_name().unwrap_or_default());
+            let base = Path::new(src)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(src);
+            let new_dest = Path::new(dest).join(base);
             return move_one(
                 src,
-                &new_dest.to_string_lossy(),
+                new_dest.to_str().unwrap_or_default(),
                 flag_f,
                 flag_i,
                 flag_n,
@@ -117,7 +125,6 @@ fn move_one(
         if flag_i {
             eprint!("mv: overwrite '{}'? ", dest);
             let mut buf = String::new();
-
             std::io::stdin().read_line(&mut buf).ok();
             if !buf.trim().starts_with('y') {
                 return Ok(());

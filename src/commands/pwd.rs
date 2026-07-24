@@ -44,21 +44,20 @@ fn pwd_main(ctx: &mut Context) -> u8 {
             return 1;
         }
     };
-    let cwd_str = cwd.to_string_lossy().into_owned();
 
     // Logical path: prefer $PWD when it is a valid alias for the physical
     // directory and -P was not requested.
-    let logical = if !flag_p {
-        env::var("PWD")
-            .ok()
-            .filter(|pwd_env| is_valid_pwd(&cwd_str, pwd_env))
-    } else {
-        None
-    };
+    if !flag_p {
+        if let Ok(pwd_env) = env::var("PWD") {
+            if is_valid_pwd(&cwd, &pwd_env) {
+                println!("{pwd_env}");
+                return 0;
+            }
+        }
+    }
 
-    let result = logical.unwrap_or(cwd_str);
-    println!("{result}");
-
+    // Fall back to physical path.
+    println!("{}", cwd.display());
     0
 }
 
@@ -66,29 +65,16 @@ fn pwd_main(ctx: &mut Context) -> u8 {
 ///
 /// The value must be an absolute path that does not contain `.` or `..`
 /// components, and it must resolve to the same device/inode pair as `cwd`.
-fn is_valid_pwd(cwd: &str, pwd_env: &str) -> bool {
+fn is_valid_pwd(cwd: &std::path::Path, pwd_env: &str) -> bool {
     // Must be absolute.
     if !pwd_env.starts_with('/') {
         return false;
     }
 
     // Reject any path containing a literal `.` or `..` segment.
-    let mut s = pwd_env;
-    while let Some(rest) = s.strip_prefix('/') {
-        if let Some(tail) = rest.strip_prefix('.') {
-            if tail.is_empty() || tail.starts_with('/') {
-                return false;
-            }
-            if let Some(t2) = tail.strip_prefix('.') {
-                if t2.is_empty() || t2.starts_with('/') {
-                    return false;
-                }
-            }
-        }
-        // Advance to the next slash-delimited segment.
-        match rest.find('/') {
-            Some(i) => s = &rest[i..],
-            None => break,
+    for seg in pwd_env.split('/').skip(1) {
+        if seg == "." || seg == ".." {
+            return false;
         }
     }
 

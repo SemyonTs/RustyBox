@@ -30,10 +30,13 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
+use std::ffi::CStr;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::time::{Duration, UNIX_EPOCH};
 
 /// In-memory representation of a single directory entry.
 struct Entry {
@@ -41,10 +44,21 @@ struct Entry {
     name: String,
     /// Full path to the entry.
     path: PathBuf,
-    /// Cached filesystem metadata.
-    meta: fs::Metadata,
-    /// Whether this entry is a directory.
+    /// Cached filesystem metadata (only what's needed: mode, size, times, etc.).
+    mode: u32,
+    size: u64,
+    blocks: u64,
+    ino: u64,
+    nlink: u64,
+    uid: u32,
+    gid: u32,
+    atime: i64,
+    mtime: i64,
     is_dir: bool,
+    is_symlink: bool,
+    is_fifo: bool,
+    is_socket: bool,
+    is_exec: bool,
     /// For symlinks: the raw target path, if readable.
     symlink_target: Option<String>,
 }
@@ -75,56 +89,18 @@ fn ls_main(ctx: &mut Context) -> u8 {
     let flag_t = opts.count('t') > 0;
     let flag_u = opts.count('u') > 0;
 
-    let mut args: Vec<String> = ctx.optargs.clone();
-    if args.is_empty() {
-        args.push(".".to_string());
-    }
-
     let mut exit_code: u8 = 0;
-    let multiple = args.len() > 1;
+    let multiple = ctx.optargs.len() > 1;
 
-    for (idx, arg) in args.iter().enumerate() {
-        let meta = match fs::symlink_metadata(arg) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("ls: cannot access '{}': {}", arg, e);
-                exit_code = 1;
-                continue;
-            }
-        };
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
 
-        // Non-directory arguments (or -d) are printed as single entries.
-        if !meta.is_dir() || flag_d {
-            let entries = vec![Entry {
-                name: arg.clone(),
-                path: PathBuf::from(arg),
-                meta: meta.clone(),
-                is_dir: false,
-                symlink_target: None,
-            }];
+    // Reusable buffers for output formatting.
+    let mut out_buf = String::with_capacity(4096);
 
-            if multiple {
-                if idx > 0 {
-                    println!();
-                }
-                println!("{arg}:");
-            }
-
-            print_entries(&entries, flag_l, flag_h, flag_i, flag_F, flag_1);
-            continue;
-        }
-
-        // Directory listing with optional header when multiple arguments
-        // are given.
-        if multiple {
-            if idx > 0 {
-                println!();
-            }
-            println!("{arg}:");
-        }
-
+    if ctx.optargs.is_empty() {
         list_dir(
-            arg,
+            ".",
             flag_l,
             flag_a,
             flag_A,
@@ -138,10 +114,104 @@ fn ls_main(ctx: &mut Context) -> u8 {
             flag_t,
             flag_u,
             &mut exit_code,
+            multiple,
+            false, // first
+            &mut writer,
+            &mut out_buf,
         );
+    } else {
+        let mut first = true;
+        for arg in &ctx.optargs {
+            let meta = match fs::symlink_metadata(arg) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("ls: cannot access '{}': {}", arg, e);
+                    exit_code = 1;
+                    continue;
+                }
+            };
+
+            // Non-directory arguments (or -d) are printed as single entries.
+            if !meta.is_dir() || flag_d {
+                let entry = entry_from_meta(arg, &meta);
+                let entries = [entry];
+
+                if multiple {
+                    if !first {
+                        writeln!(writer).ok();
+                    }
+                    writeln!(writer, "{arg}:").ok();
+                }
+
+                print_entries(
+                    &entries,
+                    flag_l,
+                    flag_h,
+                    flag_i,
+                    flag_F,
+                    flag_1,
+                    &mut writer,
+                    &mut out_buf,
+                );
+            } else {
+                list_dir(
+                    arg,
+                    flag_l,
+                    flag_a,
+                    flag_A,
+                    flag_R,
+                    flag_h,
+                    flag_i,
+                    flag_F,
+                    flag_1,
+                    flag_r,
+                    flag_S,
+                    flag_t,
+                    flag_u,
+                    &mut exit_code,
+                    multiple,
+                    first,
+                    &mut writer,
+                    &mut out_buf,
+                );
+            }
+            first = false;
+        }
     }
 
+    writer.flush().ok();
     exit_code
+}
+
+/// Build an Entry from a path and its metadata (for non-directory or -d).
+fn entry_from_meta(path: &str, meta: &fs::Metadata) -> Entry {
+    let mode = meta.mode();
+    let file_type = meta.file_type();
+    Entry {
+        name: path.to_string(),
+        path: PathBuf::from(path),
+        mode,
+        size: meta.len(),
+        blocks: meta.blocks(),
+        ino: meta.ino(),
+        nlink: meta.nlink(),
+        uid: meta.uid(),
+        gid: meta.gid(),
+        atime: meta.atime(),
+        mtime: meta.mtime(),
+        is_dir: file_type.is_dir(),
+        is_symlink: file_type.is_symlink(),
+        is_fifo: file_type.is_fifo(),
+        is_socket: file_type.is_socket(),
+        is_exec: mode & 0o111 != 0,
+        symlink_target: if file_type.is_symlink() {
+            fs::read_link(path)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+    }
 }
 
 /// Read and display the contents of a single directory.
@@ -162,6 +232,10 @@ fn list_dir(
     flag_t: bool,
     flag_u: bool,
     exit_code: &mut u8,
+    multiple: bool,
+    first: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+    out_buf: &mut String,
 ) {
     let mut entries: Vec<Entry> = match fs::read_dir(dir) {
         Ok(rd) => {
@@ -173,7 +247,9 @@ fn list_dir(
                         let path = entry.path();
                         match fs::symlink_metadata(&path) {
                             Ok(meta) => {
-                                let symlink_target = if meta.file_type().is_symlink() {
+                                let mode = meta.mode();
+                                let file_type = meta.file_type();
+                                let symlink_target = if file_type.is_symlink() {
                                     fs::read_link(&path)
                                         .ok()
                                         .map(|p| p.to_string_lossy().into_owned())
@@ -183,8 +259,20 @@ fn list_dir(
                                 v.push(Entry {
                                     name,
                                     path,
-                                    meta: meta.clone(),
-                                    is_dir: meta.is_dir(),
+                                    mode,
+                                    size: meta.len(),
+                                    blocks: meta.blocks(),
+                                    ino: meta.ino(),
+                                    nlink: meta.nlink(),
+                                    uid: meta.uid(),
+                                    gid: meta.gid(),
+                                    atime: meta.atime(),
+                                    mtime: meta.mtime(),
+                                    is_dir: file_type.is_dir(),
+                                    is_symlink: file_type.is_symlink(),
+                                    is_fifo: file_type.is_fifo(),
+                                    is_socket: file_type.is_socket(),
+                                    is_exec: mode & 0o111 != 0,
                                     symlink_target,
                                 });
                             }
@@ -216,7 +304,16 @@ fn list_dir(
 
     sort_entries(&mut entries, flag_r, flag_S, flag_t, flag_u);
 
-    print_entries(&entries, flag_l, flag_h, flag_i, flag_F, flag_1);
+    if multiple {
+        if !first {
+            writeln!(writer).ok();
+        }
+        writeln!(writer, "{dir}:").ok();
+    }
+
+    print_entries(
+        &entries, flag_l, flag_h, flag_i, flag_F, flag_1, writer, out_buf,
+    );
 
     // Recursive descent into subdirectories.
     if flag_R {
@@ -225,13 +322,17 @@ fn list_dir(
                 let sub = if dir == "." {
                     e.name.clone()
                 } else {
-                    Path::new(dir).join(&e.name).to_string_lossy().into_owned()
+                    let mut p = String::with_capacity(dir.len() + 1 + e.name.len());
+                    p.push_str(dir);
+                    p.push('/');
+                    p.push_str(&e.name);
+                    p
                 };
-                println!();
-                println!("{}:", sub);
+                writeln!(writer).ok();
+                writeln!(writer, "{}:", sub).ok();
                 list_dir(
                     &sub, flag_l, flag_a, flag_A, flag_R, flag_h, flag_i, flag_F, flag_1, flag_r,
-                    flag_S, flag_t, flag_u, exit_code,
+                    flag_S, flag_t, flag_u, exit_code, false, false, writer, out_buf,
                 );
             }
         }
@@ -247,20 +348,12 @@ fn sort_entries(entries: &mut [Entry], flag_r: bool, flag_S: bool, flag_t: bool,
         let mut ord = std::cmp::Ordering::Equal;
 
         if flag_S {
-            ord = b.meta.size().cmp(&a.meta.size());
+            ord = b.size.cmp(&a.size);
         }
 
         if ord == std::cmp::Ordering::Equal && flag_t {
-            let ta = if flag_u {
-                a.meta.atime()
-            } else {
-                a.meta.mtime()
-            };
-            let tb = if flag_u {
-                b.meta.atime()
-            } else {
-                b.meta.mtime()
-            };
+            let ta = if flag_u { a.atime } else { a.mtime };
+            let tb = if flag_u { b.atime } else { b.mtime };
             ord = tb.cmp(&ta);
         }
 
@@ -276,7 +369,7 @@ fn sort_entries(entries: &mut [Entry], flag_r: bool, flag_S: bool, flag_t: bool,
     });
 }
 
-/// Render a slice of entries to stdout.
+/// Render a slice of entries to stdout via `writer`.
 fn print_entries(
     entries: &[Entry],
     flag_l: bool,
@@ -284,109 +377,116 @@ fn print_entries(
     flag_i: bool,
     flag_F: bool,
     flag_1: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+    out_buf: &mut String,
 ) {
     if flag_l {
         // Long format: emit a "total blocks" header first.
-        let mut total_blocks = 0u64;
-        for e in entries {
-            total_blocks += e.meta.blocks() / 2; // 1024-byte → 512-byte blocks.
-        }
-        println!("total {} blocks", total_blocks);
+        let total_blocks: u64 = entries.iter().map(|e| e.blocks).sum::<u64>() / 2;
+        writeln!(writer, "total {} blocks", total_blocks).ok();
 
         for e in entries {
-            print_long(e, flag_h, flag_i, flag_F);
+            print_long(e, flag_h, flag_i, flag_F, writer, out_buf);
         }
     } else if flag_1 || entries.len() <= 1 {
         for e in entries {
-            println!("{}{}", e.name, suffix(e, flag_F));
+            out_buf.clear();
+            out_buf.push_str(&e.name);
+            if flag_F {
+                out_buf.push_str(suffix(e));
+            }
+            writeln!(writer, "{out_buf}").ok();
         }
     } else {
         // Multi-column layout, targeting an 80-column terminal.
-        let width = entries.iter().map(|e| e.name.len() + 1).max().unwrap_or(1);
+        let width = entries
+            .iter()
+            .map(|e| e.name.len() + if flag_F { suffix(e).len() } else { 0 } + 1)
+            .max()
+            .unwrap_or(1);
         let cols = std::cmp::max(1, 80 / width);
 
         for (i, e) in entries.iter().enumerate() {
-            let s = format!("{}{}", e.name, suffix(e, flag_F));
+            out_buf.clear();
+            out_buf.push_str(&e.name);
+            if flag_F {
+                out_buf.push_str(suffix(e));
+            }
             if i % cols == cols - 1 {
-                println!("{}", s);
+                writeln!(writer, "{out_buf}").ok();
             } else {
-                print!("{:<width$}", s, width = width);
+                write!(writer, "{out_buf:<width$}", width = width).ok();
             }
         }
 
         if entries.len() % cols != 0 {
-            println!();
+            writeln!(writer).ok();
         }
     }
 }
 
-/// Return the `-F` type-indicator suffix for an entry.
-fn suffix(e: &Entry, flag_F: bool) -> String {
-    if !flag_F {
-        return String::new();
-    }
-
-    let mode = e.meta.mode();
-
-    if e.meta.is_dir() {
-        "/".to_string()
-    } else if e.meta.file_type().is_symlink() {
-        "@".to_string()
-    } else if e.meta.file_type().is_fifo() {
-        "|".to_string()
-    } else if e.meta.file_type().is_socket() {
-        "=".to_string()
-    } else if mode & 0o111 != 0 {
-        "*".to_string()
+/// Return the `-F` type-indicator suffix for an entry as a `&str`.
+fn suffix(e: &Entry) -> &'static str {
+    if e.is_dir {
+        "/"
+    } else if e.is_symlink {
+        "@"
+    } else if e.is_fifo {
+        "|"
+    } else if e.is_socket {
+        "="
+    } else if e.is_exec {
+        "*"
     } else {
-        String::new()
+        ""
     }
 }
 
 /// Print a single entry in long (`-l`) format.
-fn print_long(e: &Entry, flag_h: bool, flag_i: bool, flag_F: bool) {
-    let mode = e.meta.mode();
-    let perms = mode_string(mode);
-    let nlink = e.meta.nlink();
-    let uid = e.meta.uid();
-    let gid = e.meta.gid();
-    let owner = username(uid).unwrap_or_else(|| uid.to_string());
-    let group = groupname(gid).unwrap_or_else(|| gid.to_string());
-    let size = e.meta.size();
+fn print_long(
+    e: &Entry,
+    flag_h: bool,
+    flag_i: bool,
+    flag_F: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+    out_buf: &mut String,
+) {
+    let perms = mode_string(e.mode);
+    let owner = username(e.uid).unwrap_or_else(|| e.uid.to_string());
+    let group = groupname(e.gid).unwrap_or_else(|| e.gid.to_string());
     let size_str = if flag_h {
-        human_size(size)
+        human_size(e.size)
     } else {
-        size.to_string()
+        e.size.to_string()
     };
-    let mtime = e.meta.mtime();
-    let date = format_time(mtime);
+    let date = format_time(e.mtime);
 
-    let inode = if flag_i {
-        format!("{} ", e.meta.ino())
-    } else {
-        String::new()
-    };
-
-    let name = if e.meta.file_type().is_symlink() {
+    out_buf.clear();
+    if flag_i {
+        use std::fmt::Write;
+        write!(out_buf, "{} ", e.ino).unwrap();
+    }
+    use std::fmt::Write;
+    write!(
+        out_buf,
+        "{} {:>3} {:<8} {:<8} {:>8} {} ",
+        perms, e.nlink, owner, group, size_str, date
+    )
+    .unwrap();
+    out_buf.push_str(&e.name);
+    if e.is_symlink {
         if let Some(t) = &e.symlink_target {
-            format!("{} -> {}", e.name, t)
-        } else {
-            e.name.clone()
+            out_buf.push_str(" -> ");
+            out_buf.push_str(t);
         }
-    } else {
-        format!("{}{}", e.name, suffix(e, flag_F))
-    };
+    } else if flag_F {
+        out_buf.push_str(suffix(e));
+    }
 
-    println!(
-        "{}{} {:>3} {:<8} {:<8} {:>8} {} {}",
-        inode, perms, nlink, owner, group, size_str, date, name
-    );
+    writeln!(writer, "{out_buf}").ok();
 }
 
 /// Build a 10-character `ls -l`-style mode string from a `st_mode` value.
-///
-/// Uses `as libc::mode_t` cast to work on both Linux (where mode_t is u32)
-/// and FreeBSD (where mode_t is u16).
 fn mode_string(mode: u32) -> String {
     let mut s = String::with_capacity(10);
 
@@ -454,7 +554,6 @@ fn human_size(size: u64) -> String {
 /// Convert a Unix timestamp (seconds since epoch) into a human-readable
 /// date string (`YYYY-MM-DD HH:MM`).
 fn format_time(secs: i64) -> String {
-    use std::time::{Duration, UNIX_EPOCH};
     let t = UNIX_EPOCH + Duration::from_secs(secs as u64);
     let dt: chrono::DateTime<chrono::Local> = t.into();
     dt.format("%Y-%m-%d %H:%M").to_string()
@@ -467,7 +566,7 @@ fn username(uid: u32) -> Option<String> {
         if pw.is_null() {
             None
         } else {
-            let name = std::ffi::CStr::from_ptr((*pw).pw_name);
+            let name = CStr::from_ptr((*pw).pw_name);
             Some(name.to_string_lossy().into_owned())
         }
     }
@@ -480,7 +579,7 @@ fn groupname(gid: u32) -> Option<String> {
         if gr.is_null() {
             None
         } else {
-            let name = std::ffi::CStr::from_ptr((*gr).gr_name);
+            let name = CStr::from_ptr((*gr).gr_name);
             Some(name.to_string_lossy().into_owned())
         }
     }

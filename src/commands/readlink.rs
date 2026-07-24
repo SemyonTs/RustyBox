@@ -25,6 +25,7 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 /// Entry point for the `readlink` builtin.
@@ -48,20 +49,27 @@ fn readlink_main(ctx: &mut Context) -> u8 {
     let flag_v = opts.count('v') > 0;
 
     let mut exit_code: u8 = 0;
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+
+    // Reusable buffer for building output lines.
+    let mut out_buf = String::with_capacity(256);
 
     for file in &ctx.optargs {
         match resolve(file, flag_e, flag_f, flag_m) {
             Ok(resolved) => {
+                out_buf.clear();
                 if flag_v {
-                    print!("{file} -> ");
+                    out_buf.push_str(file);
+                    out_buf.push_str(" -> ");
                 }
+                out_buf.push_str(&resolved);
                 if flag_z {
-                    print!("{resolved}\0");
-                } else if flag_n {
-                    print!("{resolved}");
-                } else {
-                    println!("{resolved}");
+                    out_buf.push('\0');
+                } else if !flag_n {
+                    out_buf.push('\n');
                 }
+                writer.write_all(out_buf.as_bytes()).ok();
             }
             Err(e) => {
                 if !flag_q {
@@ -72,6 +80,7 @@ fn readlink_main(ctx: &mut Context) -> u8 {
         }
     }
 
+    writer.flush().ok();
     exit_code
 }
 
@@ -90,9 +99,7 @@ fn resolve(path: &str, e: bool, f: bool, m: bool) -> Result<String, String> {
     }
 
     // Canonicalisation modes.
-    let must_exist = e || f;
-
-    if must_exist {
+    if e || f {
         // Both -e and -f require the path to be resolvable up to the last
         // existing component.
         fs::canonicalize(path)

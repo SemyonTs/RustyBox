@@ -21,7 +21,6 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
-use std::ffi::CStr;
 use std::mem::MaybeUninit;
 
 /// Entry point for the `uname` builtin.
@@ -37,13 +36,19 @@ fn uname_main(ctx: &mut Context) -> u8 {
     };
 
     let flag_a = opts.count('a') > 0;
-    let flag_s = opts.count('s') > 0 || flag_a;
+    let flag_s = opts.count('s') > 0
+        || flag_a
+        || opts.count('a') == 0
+            && opts.count('n') == 0
+            && opts.count('r') == 0
+            && opts.count('v') == 0
+            && opts.count('m') == 0;
     let flag_n = opts.count('n') > 0 || flag_a;
     let flag_r = opts.count('r') > 0 || flag_a;
     let flag_v = opts.count('v') > 0 || flag_a;
     let flag_m = opts.count('m') > 0 || flag_a;
 
-    // Get utsname once
+    // Get utsname once.
     let uts = unsafe {
         let mut uts: MaybeUninit<libc::utsname> = MaybeUninit::uninit();
         if libc::uname(uts.as_mut_ptr()) != 0 {
@@ -59,34 +64,42 @@ fn uname_main(ctx: &mut Context) -> u8 {
     let version = cstr_from_bytes(&uts.version);
     let machine = cstr_from_bytes(&uts.machine);
 
-    let mut parts = Vec::new();
+    // Build output string directly instead of Vec + join.
+    let mut out = String::with_capacity(256);
+    let mut first = true;
+
+    let mut push_part = |part: &str| {
+        if !first {
+            out.push(' ');
+        }
+        out.push_str(part);
+        first = false;
+    };
 
     if flag_s {
-        parts.push(sysname);
+        push_part(&sysname);
     }
     if flag_n {
-        parts.push(nodename);
+        push_part(&nodename);
     }
     if flag_r {
-        parts.push(release);
+        push_part(&release);
     }
     if flag_v {
-        parts.push(version);
+        push_part(&version);
     }
     if flag_m {
-        parts.push(machine);
+        push_part(&machine);
     }
 
-    println!("{}", parts.join(" "));
+    println!("{out}");
     0
 }
 
-/// Convert a fixed-size `c_char` array (of any size) to a Rust `String`,
+/// Convert a fixed-size `c_char` array to a Rust `String`,
 /// stopping at the first NUL byte.
 fn cstr_from_bytes<const N: usize>(bytes: &[libc::c_char; N]) -> String {
-    // Find the position of the first NUL (0) byte
     let len = bytes.iter().position(|&c| c == 0).unwrap_or(N);
-    // Convert the slice up to that point
     let bytes_u8: &[u8] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, len) };
     String::from_utf8_lossy(bytes_u8).into_owned()
 }

@@ -167,37 +167,32 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     for &file in &files {
         if flag_r && file != "-" {
-            // Recursive mode: collect all files under the directory.
-            let file_list = list_files_recursive(file);
-            for f in &file_list {
-                // f is &String, but automatically derefs to &str.
-                match grep_file(
-                    f,
-                    &regexes,
-                    flag_v,
-                    flag_n,
-                    flag_c,
-                    flag_l,
-                    flag_q,
-                    flag_h,
-                    flag_H,
-                    multiple,
-                    &mut writer,
-                ) {
-                    Ok(found) => {
-                        if found {
-                            found_any = true;
-                        }
-                    }
-                    Err(e) => {
-                        if !flag_q {
-                            eprintln!("grep: {e}");
-                        }
+            // Recursive mode: walk the directory tree lazily, processing each
+            // file as it is discovered — no upfront collection into a Vec.
+            let result = grep_recursive(
+                file,
+                &regexes,
+                flag_v,
+                flag_n,
+                flag_c,
+                flag_l,
+                flag_q,
+                flag_h,
+                flag_H,
+                multiple,
+                &mut writer,
+                &mut found_any,
+            );
+            match result {
+                Err(e) => {
+                    if !flag_q {
+                        eprintln!("grep: {e}");
                     }
                 }
-
-                if flag_q && found_any {
-                    return 0;
+                Ok(early_exit) => {
+                    if early_exit {
+                        return 0;
+                    }
                 }
             }
         } else {
@@ -243,34 +238,75 @@ fn grep_main(ctx: &mut Context) -> u8 {
     if found_any { 0 } else { 1 }
 }
 
-/// Recursively collect regular files under `dir`.
+/// Recursively walk `dir`, processing each regular file as it is discovered.
 ///
-/// Symlinks are not followed; only plain files are included in the result.
-fn list_files_recursive(dir: &str) -> Vec<String> {
-    let mut result = Vec::new();
-
+/// Returns `Ok(true)` if the caller should exit early (e.g. `-q` found a match).
+fn grep_recursive(
+    dir: &str,
+    regexes: &[Regex],
+    flag_v: bool,
+    flag_n: bool,
+    flag_c: bool,
+    flag_l: bool,
+    flag_q: bool,
+    flag_h: bool,
+    flag_H: bool,
+    multiple: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+    found_any: &mut bool,
+) -> Result<bool, String> {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
-        Err(_) => return vec![dir.to_string()],
+        Err(e) => return Err(format!("'{dir}': {e}")),
     };
 
     for item in rd {
-        if let Ok(entry) = item {
-            let path = entry.path();
-            let meta = match std::fs::symlink_metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.is_dir() {
-                let sub = list_files_recursive(&path.to_string_lossy());
-                result.extend(sub);
-            } else if meta.is_file() {
-                result.push(path.to_string_lossy().into_owned());
+        let entry = match item {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if meta.is_dir() {
+            // Recurse into subdirectory.
+            let sub_path = path.to_str().unwrap_or_default();
+            let early = grep_recursive(
+                sub_path, regexes, flag_v, flag_n, flag_c, flag_l, flag_q, flag_h, flag_H,
+                multiple, writer, found_any,
+            )?;
+            if early {
+                return Ok(true);
+            }
+        } else if meta.is_file() {
+            let file_path = path.to_str().unwrap_or_default();
+            match grep_file(
+                file_path, regexes, flag_v, flag_n, flag_c, flag_l, flag_q, flag_h, flag_H,
+                multiple, writer,
+            ) {
+                Ok(found) => {
+                    if found {
+                        *found_any = true;
+                    }
+                }
+                Err(e) => {
+                    if !flag_q {
+                        eprintln!("grep: {e}");
+                    }
+                }
+            }
+
+            if flag_q && *found_any {
+                return Ok(true);
             }
         }
+        // Symlinks and other special file types are silently skipped.
     }
 
-    result
+    Ok(false)
 }
 
 /// Search a single file (or stdin when `file == "-"`) and print matches

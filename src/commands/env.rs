@@ -17,6 +17,7 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
+use std::collections::HashMap;
 use std::process::Command;
 
 /// Entry point for the `env` builtin.
@@ -33,28 +34,28 @@ fn env_main(ctx: &mut Context) -> u8 {
     };
 
     let flag_i = opts.count('i') > 0;
-    let unset_list = opts.get_str('u').unwrap_or("").to_string();
-
-    let args: Vec<String> = ctx.optargs.clone();
+    let unset_raw = opts.get_str('u').unwrap_or("");
 
     // Build the target environment.
-    let mut new_env: std::collections::HashMap<String, String> = if flag_i {
-        std::collections::HashMap::new()
+    let mut new_env: HashMap<String, String> = if flag_i {
+        HashMap::new()
     } else {
         std::env::vars().collect()
     };
 
     // Drop variables requested via -u (comma-separated list).
-    for name in unset_list.split(',') {
+    // Use split() directly on the borrowed &str — no allocation.
+    for name in unset_raw.split(',') {
         if !name.is_empty() {
             new_env.remove(name);
         }
     }
 
     // Consume leading NAME=VALUE pairs from the positional arguments.
+    // Use an index into ctx.optargs instead of cloning the whole vector.
     let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
+    while i < ctx.optargs.len() {
+        let arg = &ctx.optargs[i];
         if let Some((name, value)) = arg.split_once('=') {
             if !name.is_empty() {
                 new_env.insert(name.to_string(), value.to_string());
@@ -68,14 +69,16 @@ fn env_main(ctx: &mut Context) -> u8 {
     }
 
     // Remaining arguments form the command to execute.
-    let cmd_args = &args[i..];
+    let cmd_args = &ctx.optargs[i..];
 
     if cmd_args.is_empty() {
         // No command — print the environment and exit.
+        // Collect keys into a Vec<&String> and sort in-place to avoid
+        // allocating a second Vec for the sorted copy.
         let mut keys: Vec<&String> = new_env.keys().collect();
         keys.sort();
         for k in keys {
-            println!("{}={}", k, new_env[k]);
+            println!("{}={}", k, new_env[k.as_str()]);
         }
         return 0;
     }

@@ -21,31 +21,18 @@ use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::cmp::Ordering;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 /// A sort key that can be compared cheaply.
 /// Built once per line before sorting (Schwartzian transform).
-#[derive(Debug, Clone)]
 enum SortKey {
     /// Numeric key (from -n).
     Numeric(f64),
-    /// Borrowed string slice — used when no case-folding or field extraction
-    /// creates new owned strings. Points into the original line buffer.
-    Borrowed(StringRef),
-    /// Owned string — used when -f or -k requires a modified copy.
-    Owned(OwnedStr),
+    /// Borrowed string slice — points directly into the original line buffer.
+    Borrowed(usize, usize),
+    /// Owned string — used when -f requires a lowercased copy.
+    Owned(String),
 }
-
-/// Thin wrapper: two indices delimiting a slice inside the original line.
-#[derive(Debug, Clone, Copy)]
-struct StringRef {
-    start: usize,
-    end: usize,
-}
-
-/// Owned string kept on the heap, allocated once per line when necessary.
-#[derive(Debug, Clone)]
-struct OwnedStr(String);
 
 /// Holds both the pre-built sort key and the original line.
 struct Decorated {
@@ -69,25 +56,28 @@ fn sort_main(ctx: &mut Context) -> u8 {
     let flag_n = opts.count('n') > 0;
     let flag_u = opts.count('u') > 0;
     let flag_f = opts.count('f') > 0;
-    let keys = opts.get_str('k').unwrap_or("").to_string();
+    let keys = opts.get_str('k').unwrap_or("");
 
-    let args: Vec<String> = ctx.optargs.clone();
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        args
-    };
-
-    // Collect all input lines efficiently.
+    // Collect all input lines without cloning the entire optargs vector.
     let mut lines: Vec<String> = Vec::new();
     let mut exit_code: u8 = 0;
 
-    for file in &files {
-        match read_lines_eager(file) {
+    if ctx.optargs.is_empty() {
+        match read_lines("-") {
             Ok(mut l) => lines.append(&mut l),
             Err(e) => {
                 eprintln!("sort: {e}");
                 exit_code = 1;
+            }
+        }
+    } else {
+        for file in &ctx.optargs {
+            match read_lines(file) {
+                Ok(mut l) => lines.append(&mut l),
+                Err(e) => {
+                    eprintln!("sort: {e}");
+                    exit_code = 1;
+                }
             }
         }
     }
@@ -98,13 +88,16 @@ fn sort_main(ctx: &mut Context) -> u8 {
     }
 
     // Parse the sort key (simplified: a single field number).
-    let key = parse_key(&keys);
+    let key = parse_key(keys);
 
-    // Determine if we can use the fast path: no -n, no -f, no -k, no -u.
+    // Determine if we can use the fast path: no -n, no -f, no -k.
     let fast_path = !flag_n && !flag_f && key.is_none();
 
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+
     if fast_path {
-        // Fast path: sort string slices directly, no key building needed.
+        // Fast path: sort string slices directly.
         if flag_r {
             lines.sort_unstable_by(|a, b| b.cmp(a));
         } else {
@@ -113,6 +106,10 @@ fn sort_main(ctx: &mut Context) -> u8 {
 
         if flag_u {
             lines.dedup();
+        }
+
+        for line in &lines {
+            writeln!(writer, "{}", line).ok();
         }
     } else {
         // General path: Schwartzian transform with pre-built keys.
@@ -128,79 +125,59 @@ fn sort_main(ctx: &mut Context) -> u8 {
             .collect();
 
         // Sort by the key, respecting -r.
-        decorated.sort_by(|a, b| compare_keys(&a.key, &b.key, &a.line, &b.line, flag_r));
+        decorated.sort_unstable_by(|a, b| {
+            let ord = compare_keys(&a.key, &b.key, &a.line, &b.line);
+            if flag_r { ord.reverse() } else { ord }
+        });
 
         // Deduplicate consecutive equal lines when -u is requested.
         if flag_u {
             decorated.dedup_by(|a, b| keys_equal(&a.key, &b.key, &a.line, &b.line));
         }
 
-        // Output.
         for d in &decorated {
-            println!("{}", d.line);
+            writeln!(writer, "{}", d.line).ok();
         }
-        return exit_code;
     }
 
-    // Output for fast path.
-    for line in &lines {
-        println!("{}", line);
-    }
-
+    writer.flush().ok();
     exit_code
 }
 
 /// Compare two sort keys, using the original lines when the key borrows from them.
-#[inline]
-fn compare_keys(a: &SortKey, b: &SortKey, line_a: &str, line_b: &str, reverse: bool) -> Ordering {
-    let ord = match (a, b) {
+fn compare_keys(a: &SortKey, b: &SortKey, line_a: &str, line_b: &str) -> Ordering {
+    match (a, b) {
         (SortKey::Numeric(na), SortKey::Numeric(nb)) => {
             na.partial_cmp(nb).unwrap_or(Ordering::Equal)
         }
-        (SortKey::Borrowed(ref_a), SortKey::Borrowed(ref_b)) => {
-            let sa = &line_a[ref_a.start..ref_a.end];
-            let sb = &line_b[ref_b.start..ref_b.end];
-            sa.cmp(sb)
+        (SortKey::Borrowed(sa, ea), SortKey::Borrowed(sb, eb)) => {
+            line_a[*sa..*ea].cmp(&line_b[*sb..*eb])
         }
-        (SortKey::Owned(OwnedStr(sa)), SortKey::Owned(OwnedStr(sb))) => sa.cmp(sb),
-        // Mixed: numbers sort before strings.
+        (SortKey::Owned(sa), SortKey::Owned(sb)) => sa.cmp(sb),
         (SortKey::Numeric(_), _) => Ordering::Less,
         (_, SortKey::Numeric(_)) => Ordering::Greater,
-        // Mixed Borrowed/Owned — treat both as strings.
-        (a, b) => {
-            let sa = resolve_str(a, line_a);
-            let sb = resolve_str(b, line_b);
-            sa.as_ref().cmp(sb.as_ref())
-        }
-    };
-
-    if reverse { ord.reverse() } else { ord }
+        (a, b) => resolve_str(a, line_a).cmp(resolve_str(b, line_b)),
+    }
 }
 
 /// Check equality of two sort keys (for dedup).
-#[inline]
 fn keys_equal(a: &SortKey, b: &SortKey, line_a: &str, line_b: &str) -> bool {
     match (a, b) {
         (SortKey::Numeric(na), SortKey::Numeric(nb)) => na == nb,
-        (SortKey::Borrowed(ref_a), SortKey::Borrowed(ref_b)) => {
-            &line_a[ref_a.start..ref_a.end] == &line_b[ref_b.start..ref_b.end]
+        (SortKey::Borrowed(sa, ea), SortKey::Borrowed(sb, eb)) => {
+            line_a[*sa..*ea] == line_b[*sb..*eb]
         }
-        (SortKey::Owned(OwnedStr(sa)), SortKey::Owned(OwnedStr(sb))) => sa == sb,
-        _ => {
-            let sa = resolve_str(a, line_a);
-            let sb = resolve_str(b, line_b);
-            sa.as_ref() == sb.as_ref()
-        }
+        (SortKey::Owned(sa), SortKey::Owned(sb)) => sa == sb,
+        (a, b) => resolve_str(a, line_a) == resolve_str(b, line_b),
     }
 }
 
 /// Get a &str from a SortKey, using the original line for Borrowed variants.
-#[inline]
-fn resolve_str<'a>(key: &'a SortKey, line: &'a str) -> std::borrow::Cow<'a, str> {
+fn resolve_str<'a>(key: &'a SortKey, line: &'a str) -> &'a str {
     match key {
-        SortKey::Borrowed(r) => std::borrow::Cow::Borrowed(&line[r.start..r.end]),
-        SortKey::Owned(OwnedStr(s)) => std::borrow::Cow::Borrowed(s.as_str()),
-        SortKey::Numeric(_) => std::borrow::Cow::Borrowed(""),
+        SortKey::Borrowed(s, e) => &line[*s..*e],
+        SortKey::Owned(s) => s.as_str(),
+        SortKey::Numeric(_) => "",
     }
 }
 
@@ -211,30 +188,23 @@ fn build_sort_key(
     fold_case: bool,
     key: &Option<(usize, usize)>,
 ) -> SortKey {
-    // Find the field boundaries in the original string.
     let (field_start, field_end) = match key {
         Some((start, _)) => field_range(line, *start),
         None => (0, line.len()),
     };
 
-    // If we need numeric parsing, always parse from the slice.
     if numeric {
         let slice = &line[field_start..field_end];
         let val = slice.trim().parse::<f64>().unwrap_or(0.0);
         return SortKey::Numeric(val);
     }
 
-    // If case-folding is needed, we must allocate an owned lowercased string.
     if fold_case {
         let lower = line[field_start..field_end].to_lowercase();
-        return SortKey::Owned(OwnedStr(lower));
+        return SortKey::Owned(lower);
     }
 
-    // Neither -n nor -f: we can borrow from the original line (zero-copy).
-    SortKey::Borrowed(StringRef {
-        start: field_start,
-        end: field_end,
-    })
+    SortKey::Borrowed(field_start, field_end)
 }
 
 /// Return the byte range of the n-th whitespace-delimited field (1-based).
@@ -251,14 +221,12 @@ fn field_range(line: &str, n: usize) -> (usize, usize) {
     for (i, ch) in line.char_indices() {
         let is_space = ch.is_whitespace();
         if !is_space && !in_field {
-            // Entering a new field.
             field_idx += 1;
             if field_idx == n {
                 start = i;
             }
             in_field = true;
         } else if is_space && in_field {
-            // Leaving a field.
             if field_idx == n {
                 return (start, i);
             }
@@ -266,50 +234,47 @@ fn field_range(line: &str, n: usize) -> (usize, usize) {
         }
     }
 
-    // Last field extends to end of line.
     if field_idx == n && in_field {
         return (start, line.len());
     }
 
-    // Field not found.
     (0, 0)
 }
 
-/// Read all lines from a file (or stdin) into a Vec, pre-allocating capacity.
-fn read_lines_eager(file: &str) -> Result<Vec<String>, String> {
-    let mut content = String::new();
-
-    if file == "-" {
-        std::io::stdin()
-            .read_to_string(&mut content)
-            .map_err(|e| format!("stdin: {}", e))?;
+/// Read all lines from a file (or stdin) into a Vec using `read_line` for
+/// reuse of a single buffer — avoids allocating an intermediate String for
+/// the whole file content.
+fn read_lines(file: &str) -> Result<Vec<String>, String> {
+    let mut reader: Box<dyn BufRead> = if file == "-" {
+        Box::new(std::io::stdin().lock())
     } else {
-        let mut f = File::open(file).map_err(|e| format!("'{}': {}", file, e))?;
-        f.read_to_string(&mut content)
+        let f = File::open(file).map_err(|e| format!("'{}': {}", file, e))?;
+        Box::new(BufReader::new(f))
+    };
+
+    let mut lines = Vec::new();
+    let mut buf = String::with_capacity(4096);
+
+    loop {
+        buf.clear();
+        let n = reader
+            .read_line(&mut buf)
             .map_err(|e| format!("'{}': {}", file, e))?;
-    }
-
-    // Count lines for pre-allocation.
-    let line_count = content.bytes().filter(|&b| b == b'\n').count();
-    let mut lines: Vec<String> = Vec::with_capacity(line_count);
-
-    let mut start = 0;
-    for (i, ch) in content.char_indices() {
-        if ch == '\n' {
-            // Strip trailing \r for Windows line endings.
-            let end = if i > start && content.as_bytes()[i - 1] == b'\r' {
-                i - 1
-            } else {
-                i
-            };
-            lines.push(content[start..end].to_string());
-            start = i + 1;
+        if n == 0 {
+            break;
         }
-    }
-
-    // Last line without trailing newline.
-    if start < content.len() {
-        lines.push(content[start..].to_string());
+        // Strip trailing newline (and optional \r for CRLF).
+        let line = if buf.ends_with('\n') {
+            let end = buf.len() - 1;
+            if end > 0 && buf.as_bytes()[end - 1] == b'\r' {
+                buf[..end - 1].to_string()
+            } else {
+                buf[..end].to_string()
+            }
+        } else {
+            buf.clone()
+        };
+        lines.push(line);
     }
 
     Ok(lines)
@@ -323,13 +288,12 @@ fn parse_key(s: &str) -> Option<(usize, usize)> {
         return None;
     }
 
-    let parts: Vec<&str> = s.split(',').collect();
-    let start = parts[0].parse::<usize>().ok()?;
-    let end = if parts.len() > 1 {
-        parts[1].parse::<usize>().unwrap_or(usize::MAX)
-    } else {
-        usize::MAX
-    };
+    let mut parts = s.split(',');
+    let start = parts.next()?.parse::<usize>().ok()?;
+    let end = parts
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
 
     Some((start, end))
 }

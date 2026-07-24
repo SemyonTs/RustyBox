@@ -40,15 +40,17 @@ fn chmod_main(ctx: &mut Context) -> u8 {
     let flag_c = opts.count('c') > 0;
     let flag_f = opts.count('f') > 0;
 
-    let mut args: Vec<String> = ctx.optargs.clone();
-    if args.len() < 2 {
+    if ctx.optargs.len() < 2 {
         eprintln!("chmod: not enough arguments");
         return 1;
     }
 
     // The first argument is the mode string; the remainder are file operands.
-    let mode_str = args.remove(0);
-    let mode = match parse_mode(&mode_str) {
+    // Borrow instead of cloning the whole vector and removing.
+    let mode_str = &ctx.optargs[0];
+    let files = &ctx.optargs[1..];
+
+    let mode = match parse_mode(mode_str) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("chmod: invalid mode '{mode_str}': {e}");
@@ -57,7 +59,7 @@ fn chmod_main(ctx: &mut Context) -> u8 {
     };
 
     let mut exit_code: u8 = 0;
-    for file in &args {
+    for file in files {
         if let Err(e) = chmod_one(file, &mode, flag_R, flag_v, flag_c, flag_f) {
             if !flag_f {
                 eprintln!("chmod: {e}");
@@ -117,7 +119,8 @@ fn chmod_one(
         let rd = fs::read_dir(file).map_err(|e| format!("'{file}': {e}"))?;
         for item in rd {
             let entry = item.map_err(|e| e.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let fname = entry.file_name();
+            let name = fname.to_str().unwrap_or_default();
 
             // Skip the self-referential directory entries.
             if name == "." || name == ".." {
@@ -132,13 +135,11 @@ fn chmod_one(
                 continue;
             }
 
+            // Reuse path as OsStr to avoid allocation when possible.
+            let path_str = path.to_str().unwrap_or_default();
             chmod_one(
-                &path.to_string_lossy(),
-                mode,
-                true, // recursion is always enabled for children
-                flag_v,
-                flag_c,
-                _flag_f,
+                path_str, mode, true, // recursion is always enabled for children
+                flag_v, flag_c, _flag_f,
             )?;
         }
     }

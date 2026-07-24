@@ -35,39 +35,44 @@ fn cut_main(ctx: &mut Context) -> u8 {
         }
     };
 
-    let bytes = opts.get_str('b').unwrap_or("").to_string();
-    let chars = opts.get_str('c').unwrap_or("").to_string();
-    let fields = opts.get_str('f').unwrap_or("").to_string();
-    let delim_str = opts.get_str('d').unwrap_or("\t").to_string();
+    // Borrow directly — no unnecessary to_string() for option values that are
+    // only used as &str.
+    let bytes_raw = opts.get_str('b').unwrap_or("");
+    let chars_raw = opts.get_str('c').unwrap_or("");
+    let fields_raw = opts.get_str('f').unwrap_or("");
+    let delim_str_raw = opts.get_str('d').unwrap_or("\t");
 
-    let mode = if !bytes.is_empty() {
-        Mode::Bytes(canonical_ranges(&parse_list(&bytes)))
-    } else if !chars.is_empty() {
-        Mode::Chars(canonical_ranges(&parse_list(&chars)))
-    } else if !fields.is_empty() {
-        let delim_char = delim_str.chars().next().unwrap_or('\t');
+    let mode = if !bytes_raw.is_empty() {
+        Mode::Bytes(canonical_ranges(&parse_list(bytes_raw)))
+    } else if !chars_raw.is_empty() {
+        Mode::Chars(canonical_ranges(&parse_list(chars_raw)))
+    } else if !fields_raw.is_empty() {
+        let delim_char = delim_str_raw.chars().next().unwrap_or('\t');
         Mode::Fields {
-            ranges: canonical_ranges(&parse_list(&fields)),
+            ranges: canonical_ranges(&parse_list(fields_raw)),
             delim_char,
-            delim_str,
+            delim_str: delim_str_raw.to_string(),
         }
     } else {
         eprintln!("cut: need to specify -b, -c or -f");
         return 1;
     };
 
-    let args: Vec<String> = ctx.optargs.clone();
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        args
-    };
-
+    // No cloning of the entire optargs vector — just borrow or use a single
+    // allocation for the fallback "-".
     let mut exit_code: u8 = 0;
-    for file in &files {
-        if let Err(e) = cut_file(file, &mode) {
+
+    if ctx.optargs.is_empty() {
+        if let Err(e) = cut_file("-", &mode) {
             eprintln!("cut: {e}");
             exit_code = 1;
+        }
+    } else {
+        for file in &ctx.optargs {
+            if let Err(e) = cut_file(file, &mode) {
+                eprintln!("cut: {e}");
+                exit_code = 1;
+            }
         }
     }
 
@@ -160,12 +165,15 @@ fn cut_file(file: &str, mode: &Mode) -> Result<(), String> {
     let stdout = std::io::stdout();
     let mut writer = BufWriter::new(stdout.lock());
 
+    // Reusable output buffer — cleared and reused for each line.
+    let mut out = Vec::with_capacity(4096);
+
     match mode {
         Mode::Bytes(ranges) => {
             for line in reader.lines() {
                 let line = line.map_err(|e| e.to_string())?;
                 let bytes = line.as_bytes();
-                let mut out = Vec::with_capacity(bytes.len() / 8); // reasonable guess
+                out.clear();
                 for &(start, end) in ranges {
                     let s_idx = start.saturating_sub(1);
                     let e_idx = std::cmp::min(end, bytes.len());
@@ -180,7 +188,7 @@ fn cut_file(file: &str, mode: &Mode) -> Result<(), String> {
         Mode::Chars(ranges) => {
             for line in reader.lines() {
                 let line = line.map_err(|e| e.to_string())?;
-                let mut out = Vec::with_capacity(line.len() / 4);
+                out.clear();
                 let mut range_iter = ranges.iter().copied().peekable();
                 let mut current: Option<(usize, usize)> = None;
 
@@ -234,9 +242,11 @@ fn cut_file(file: &str, mode: &Mode) -> Result<(), String> {
         } => {
             for line in reader.lines() {
                 let line = line.map_err(|e| e.to_string())?;
-                let mut out_fields = Vec::with_capacity(ranges.len());
+                let delim_bytes = delim_str.as_bytes();
+                out.clear();
                 let mut range_iter = ranges.iter().copied().peekable();
                 let mut current: Option<(usize, usize)> = None;
+                let mut first_field = true;
 
                 for (idx_0, field) in line.split(*delim_char).enumerate() {
                     let idx_1 = idx_0 + 1;
@@ -264,22 +274,17 @@ fn cut_file(file: &str, mode: &Mode) -> Result<(), String> {
 
                     if let Some((start, _)) = current {
                         if idx_1 >= start {
-                            out_fields.push(field);
+                            if !first_field {
+                                out.extend_from_slice(delim_bytes);
+                            }
+                            out.extend_from_slice(field.as_bytes());
+                            first_field = false;
                         }
                     }
 
                     if current.is_none() && range_iter.peek().is_none() {
                         break;
                     }
-                }
-
-                // Manually join the selected fields using the original delimiter.
-                let mut out = Vec::new();
-                for (i, f) in out_fields.iter().enumerate() {
-                    if i > 0 {
-                        out.extend_from_slice(delim_str.as_bytes());
-                    }
-                    out.extend_from_slice(f.as_bytes());
                 }
 
                 writer.write_all(&out).map_err(|e| e.to_string())?;

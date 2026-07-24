@@ -49,25 +49,35 @@ fn rmdir_main(ctx: &mut Context) -> u8 {
 ///
 /// Returns `true` on success.
 fn do_rmdir(name: &str, parents: bool, ignore_nonempty: bool) -> bool {
-    let mut path = name.to_string();
+    // Work with a &str slice into the original path, only allocating when
+    // the path contains trailing slashes that need trimming.
+    let base_path: String;
+    let mut current: &str = if name.ends_with('/') {
+        base_path = name.trim_end_matches('/').to_string();
+        if base_path.is_empty() {
+            return true; // name was all slashes — nothing to do.
+        }
+        &base_path
+    } else {
+        name
+    };
 
     loop {
-        match fs::remove_dir(&path) {
+        match fs::remove_dir(current) {
             Ok(()) => {}
             Err(e) => {
                 // Suppress the error when the directory is non-empty and the
                 // caller requested `--ignore-fail-on-non-empty`.
-                let is_nonempty = matches!(
-                    e.kind(),
-                    std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::Other
-                ) && (e.raw_os_error() == Some(39) // ENOTEMPTY on Linux
-                    || e.to_string().contains("not empty"));
-
-                if ignore_nonempty && is_nonempty {
+                if ignore_nonempty
+                    && matches!(
+                        e.kind(),
+                        std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::Other
+                    )
+                {
                     return true;
                 }
 
-                eprintln!("rmdir: cannot remove '{}': {}", path, e);
+                eprintln!("rmdir: cannot remove '{}': {}", current, e);
                 return false;
             }
         }
@@ -77,33 +87,15 @@ fn do_rmdir(name: &str, parents: bool, ignore_nonempty: bool) -> bool {
         }
 
         // Ascend one level: strip the last path component.
-        // Trailing slashes are removed first so they do not interfere.
-        while path.ends_with('/') {
-            path.pop();
-        }
-
-        match path.rfind('/') {
-            Some(i) => {
-                if i == 0 {
-                    // The remainder is "/" or an immediate child of root
-                    // (e.g. "/a" → "/").
-                    if path == "/" {
-                        return true;
-                    }
-                    path.truncate(i);
-                    if path.is_empty() {
-                        return true;
-                    }
-                } else {
-                    path.truncate(i);
+        match current.rsplit_once('/') {
+            Some((parent, _)) => {
+                if parent.is_empty() {
+                    // current was "/foo" or just "/" — root reached.
+                    return true;
                 }
+                current = parent;
             }
-            None => return true, // no more ancestors to process
-        }
-
-        // Stop when we reach the filesystem root.
-        if path.is_empty() || path == "/" {
-            return true;
+            None => return true, // no more ancestors
         }
     }
 }

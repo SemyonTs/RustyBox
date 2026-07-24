@@ -17,6 +17,7 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
+use std::ffi::CString;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
@@ -37,22 +38,20 @@ fn df_main(ctx: &mut Context) -> u8 {
     let flag_h = opts.count('h') > 0;
     let flag_T = opts.count('T') > 0;
 
-    let args: Vec<String> = ctx.optargs.clone();
-
     // Obtain the list of currently mounted filesystems.
     let mounts = read_mounts();
 
-    // Select which mounts to report.
-    let mut selected = Vec::new();
-    if args.is_empty() {
-        selected = mounts;
+    // Select which mounts to report — borrow from `mounts` instead of cloning.
+    let mut selected: Vec<&Mount> = Vec::new();
+    if ctx.optargs.is_empty() {
+        selected = mounts.iter().collect();
     } else {
-        for arg in &args {
+        for arg in &ctx.optargs {
             if let Ok(meta) = fs::metadata(arg) {
                 let dev = meta.dev();
                 for m in &mounts {
                     if m.dev == dev {
-                        selected.push(m.clone());
+                        selected.push(m);
                         break;
                     }
                 }
@@ -75,10 +74,13 @@ fn df_main(ctx: &mut Context) -> u8 {
 
     // Emit one row per selected mount.
     for m in &selected {
+        let mount_cstr = match CString::new(m.mount_point.as_str()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
         let stat = unsafe {
-            let path = std::ffi::CString::new(m.mount_point.clone()).unwrap();
             let mut buf: libc::statvfs = std::mem::zeroed();
-            if libc::statvfs(path.as_ptr(), &mut buf) != 0 {
+            if libc::statvfs(mount_cstr.as_ptr(), &mut buf) != 0 {
                 continue;
             }
             buf
@@ -119,7 +121,6 @@ fn df_main(ctx: &mut Context) -> u8 {
 }
 
 /// A single entry from `/proc/mounts`.
-#[derive(Clone)]
 struct Mount {
     /// Device identifier from `stat(2)`, used to match arguments to mounts.
     dev: u64,
@@ -137,21 +138,26 @@ fn read_mounts() -> Vec<Mount> {
     let mut result = Vec::new();
     if let Ok(content) = std::fs::read_to_string("/proc/mounts") {
         for line in content.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let mount_point = parts[1].to_string();
-                let fs_type = parts[2].to_string();
-                let dev = if let Ok(meta) = fs::metadata(&mount_point) {
-                    meta.dev()
-                } else {
-                    0
-                };
-                result.push(Mount {
-                    dev,
-                    mount_point,
-                    fs_type,
-                });
-            }
+            let mut parts = line.split_whitespace();
+            // Parse only the fields we need without collecting into a Vec.
+            let mount_point = match parts.nth(1) {
+                Some(mp) => mp.to_string(),
+                None => continue,
+            };
+            let fs_type = match parts.next() {
+                Some(ft) => ft.to_string(),
+                None => continue,
+            };
+            let dev = if let Ok(meta) = fs::metadata(&mount_point) {
+                meta.dev()
+            } else {
+                0
+            };
+            result.push(Mount {
+                dev,
+                mount_point,
+                fs_type,
+            });
         }
     }
     result
@@ -165,25 +171,25 @@ fn read_mounts() -> Vec<Mount> {
 /// target unit.
 fn human(bytes: u64, flag_h: bool) -> String {
     if !flag_h {
-        return format!("{}", bytes / 1024);
+        return (bytes / 1024).to_string();
     }
 
     const UNITS: &[&str] = &["", "K", "M", "G", "T", "P", "E"];
-    let mut s = bytes as f64;
-    let mut i = 0;
+    let mut value = bytes as f64;
+    let mut idx = 0;
 
-    while s >= 1024.0 && i < UNITS.len() - 1 {
-        s /= 1024.0;
-        i += 1;
+    while value >= 1024.0 && idx < UNITS.len() - 1 {
+        value /= 1024.0;
+        idx += 1;
     }
 
-    if i == 0 {
+    if idx == 0 {
         // Byte-level: display in kB for consistency with the non-human path.
-        format!("{}", bytes / 1024)
-    } else if s >= 10.0 {
-        format!("{:.0}{}", s, UNITS[i])
+        (bytes / 1024).to_string()
+    } else if value >= 10.0 {
+        format!("{:.0}{}", value, UNITS[idx])
     } else {
-        format!("{:.1}{}", s, UNITS[i])
+        format!("{:.1}{}", value, UNITS[idx])
     }
 }
 

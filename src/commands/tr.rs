@@ -17,7 +17,10 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
+
+/// Internal I/O buffer size.
+const BUFSZ: usize = 4096;
 
 fn tr_main(ctx: &mut Context) -> u8 {
     let opts = match crate::args::parse(ctx, "ds(c)") {
@@ -32,32 +35,35 @@ fn tr_main(ctx: &mut Context) -> u8 {
     let flag_s = opts.count('s') > 0;
     let flag_c = opts.count('c') > 0;
 
-    let args: Vec<String> = ctx.optargs.clone();
-    if args.is_empty() {
+    if ctx.optargs.is_empty() {
         eprintln!("tr: missing SET1");
         return 1;
     }
 
-    let set1_bytes = expand_set_bytes(&args[0]);
-    let set2_bytes = if args.len() > 1 {
-        expand_set_bytes(&args[1])
+    let set1_bytes = expand_set_bytes(&ctx.optargs[0]);
+    let set2_bytes = if ctx.optargs.len() > 1 {
+        expand_set_bytes(&ctx.optargs[1])
     } else {
         Vec::new()
     };
 
-    // Build translation table for all 256 bytes.
-    let mut table = [0u8; 256];
-    let mut delete = [false; 256]; // fast delete flag
-    let mut squeeze = [false; 256]; // fast squeeze set
-
-    // Determine effective set1: complement if -c
+    // Determine effective set1: complement if -c.
     let effective_set1: Vec<u8> = if flag_c {
         (0u8..=255).filter(|b| !set1_bytes.contains(b)).collect()
     } else {
         set1_bytes
     };
 
-    // Mark squeeze set before any modifications (for -s)
+    // Build translation table and delete/squeeze flags.
+    let mut table = [0u8; 256];
+    let mut delete = [false; 256];
+    let mut squeeze = [false; 256];
+
+    // Initialize table as identity.
+    for i in 0..=255 {
+        table[i] = i as u8;
+    }
+
     if flag_s {
         for &b in &effective_set1 {
             squeeze[b as usize] = true;
@@ -65,21 +71,11 @@ fn tr_main(ctx: &mut Context) -> u8 {
     }
 
     if flag_d {
-        // Delete mode: mark bytes to delete
         for &b in &effective_set1 {
             delete[b as usize] = true;
         }
-        // Table is identity for remaining bytes
-        for i in 0..=255 {
-            table[i] = i as u8;
-        }
     } else {
-        // Translate mode: build mapping
-        // Default: identity
-        for i in 0..=255 {
-            table[i] = i as u8;
-        }
-        // Map set1 -> set2
+        // Translate mode: map set1 -> set2.
         for (i, &b) in effective_set1.iter().enumerate() {
             let mapped = if i < set2_bytes.len() {
                 set2_bytes[i]
@@ -91,49 +87,55 @@ fn tr_main(ctx: &mut Context) -> u8 {
     }
 
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout().lock();
-    let mut in_buf = [0u8; 4096];
-    let mut out_buf = Vec::with_capacity(4096);
+    let mut reader = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+
+    let mut in_buf = [0u8; BUFSZ];
+    let mut out_buf = Vec::with_capacity(BUFSZ);
+
+    // Reusable squeeze buffer to avoid allocating a new Vec every iteration.
+    let mut squeeze_buf = Vec::with_capacity(BUFSZ);
 
     loop {
-        let n = match stdin.lock().read(&mut in_buf) {
+        let n = match reader.read(&mut in_buf) {
             Ok(0) => break,
             Ok(n) => n,
             Err(_) => break,
         };
 
-        out_buf.clear();
         let slice = &in_buf[..n];
 
+        out_buf.clear();
         if flag_d {
-            // Delete: just keep bytes not marked for deletion
+            // Delete: keep only bytes not marked for deletion.
             out_buf.extend(slice.iter().filter(|&&b| !delete[b as usize]));
         } else {
-            // Translate: apply table
+            // Translate: apply mapping table.
             for &b in slice {
                 out_buf.push(table[b as usize]);
             }
         }
 
-        // Apply squeeze if -s
         if flag_s {
-            let mut squeezed = Vec::with_capacity(out_buf.len());
-            let mut last = None;
+            squeeze_buf.clear();
+            let mut last: Option<u8> = None;
             for &b in &out_buf {
                 if squeeze[b as usize] {
                     if last == Some(b) {
-                        continue; // skip consecutive duplicate of squeeze set
+                        continue;
                     }
                 }
-                squeezed.push(b);
+                squeeze_buf.push(b);
                 last = Some(b);
             }
-            stdout.write_all(&squeezed).ok();
+            writer.write_all(&squeeze_buf).ok();
         } else {
-            stdout.write_all(&out_buf).ok();
+            writer.write_all(&out_buf).ok();
         }
     }
 
+    writer.flush().ok();
     0
 }
 
@@ -159,7 +161,7 @@ fn expand_set_bytes(s: &str) -> Vec<u8> {
             result.push(b);
             i += 2;
         } else if bytes[i] == b'-' && i > 0 && i + 1 < bytes.len() {
-            // Expand byte range: e.g., 'a-z'
+            // Expand byte range: e.g., 'a-z'.
             let start = bytes[i - 1];
             let end = bytes[i + 1];
             if start < end {

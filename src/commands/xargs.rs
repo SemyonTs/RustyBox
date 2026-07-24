@@ -18,7 +18,7 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
-use std::io::{BufRead, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::process::Command;
 
 /// Entry point for the `xargs` builtin.
@@ -34,59 +34,60 @@ fn xargs_main(ctx: &mut Context) -> u8 {
     };
 
     let max_args = opts.get_int('n').unwrap_or(0) as usize;
-    let replace = opts.get_str('I').unwrap_or("").to_string();
+    let replace = opts.get_str('I').unwrap_or("");
     let flag_0 = opts.count('0') > 0;
 
-    let mut args: Vec<String> = ctx.optargs.clone();
+    // Determine command and initial arguments from positional args without
+    // cloning the entire vector.
+    let command: &str;
+    let initial: &[String];
 
-    // The first positional argument is the command; if absent, default to
-    // `echo`.
-    let command = if args.is_empty() {
-        "echo".to_string()
+    if ctx.optargs.is_empty() {
+        command = "echo";
+        initial = &[];
     } else {
-        args.remove(0)
-    };
-    let initial: Vec<String> = args;
+        command = &ctx.optargs[0];
+        initial = &ctx.optargs[1..];
+    }
 
     // Collect input items from stdin.
     let stdin = std::io::stdin();
-    let mut items = Vec::new();
-
-    if flag_0 {
+    let items: Vec<String> = if flag_0 {
         // NUL-delimited mode.
         let mut buf = Vec::new();
         stdin.lock().read_to_end(&mut buf).ok();
-        for part in buf.split(|&b| b == 0) {
-            if !part.is_empty() {
-                items.push(String::from_utf8_lossy(part).into_owned());
-            }
-        }
+        buf.split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect()
     } else {
         // Whitespace-delimited mode.
-        for line in stdin.lock().lines() {
+        let reader = BufReader::new(stdin.lock());
+        let mut items = Vec::new();
+        for line in reader.lines() {
             if let Ok(line) = line {
                 for word in line.split_whitespace() {
                     items.push(word.to_string());
                 }
             }
         }
-    }
+        items
+    };
 
     let mut exit_code: u8 = 0;
 
     if !replace.is_empty() {
         // -I mode: one invocation per input item, with substitution.
+        let replace_owned = replace.to_string();
         for item in &items {
             let mut cmd_args: Vec<String> = initial
                 .iter()
-                .map(|ia| ia.replace(&replace, item))
+                .map(|ia| ia.replace(&replace_owned, item))
                 .collect();
-            // Also append the item itself when no replacement was found in
-            // the initial arguments, to match traditional xargs behaviour.
-            if !initial.iter().any(|ia| ia.contains(&replace)) {
+            if !initial.iter().any(|ia| ia.contains(&replace_owned)) {
                 cmd_args.push(item.clone());
             }
-            if let Err(e) = run_cmd(&command, &cmd_args) {
+            if let Err(e) = run_cmd(command, &cmd_args) {
                 eprintln!("xargs: {}", e);
                 exit_code = 1;
             }
@@ -94,18 +95,18 @@ fn xargs_main(ctx: &mut Context) -> u8 {
     } else if max_args > 0 {
         // Chunked mode: at most `max_args` arguments per invocation.
         for chunk in items.chunks(max_args) {
-            let mut cmd_args = initial.clone();
+            let mut cmd_args = initial.to_vec();
             cmd_args.extend_from_slice(chunk);
-            if let Err(e) = run_cmd(&command, &cmd_args) {
+            if let Err(e) = run_cmd(command, &cmd_args) {
                 eprintln!("xargs: {}", e);
                 exit_code = 1;
             }
         }
     } else {
         // Single invocation with all input items appended.
-        let mut cmd_args = initial.clone();
+        let mut cmd_args = initial.to_vec();
         cmd_args.extend(items);
-        if let Err(e) = run_cmd(&command, &cmd_args) {
+        if let Err(e) = run_cmd(command, &cmd_args) {
             eprintln!("xargs: {}", e);
             exit_code = 1;
         }

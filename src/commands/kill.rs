@@ -31,13 +31,11 @@ fn kill_main(ctx: &mut Context) -> u8 {
     };
 
     let flag_l = opts.count('l') > 0;
-    let sig_name = opts.get_str('s').unwrap_or("").to_string();
-
-    let args: Vec<String> = ctx.optargs.clone();
+    let sig_name = opts.get_str('s').unwrap_or("");
 
     // -l: list mode.
     if flag_l {
-        if args.is_empty() {
+        if ctx.optargs.is_empty() {
             // Print all signal numbers and names.
             for i in 1..32 {
                 if let Some(name) = signal_name(i) {
@@ -46,7 +44,7 @@ fn kill_main(ctx: &mut Context) -> u8 {
             }
         } else {
             // Translate each numeric argument to its signal name.
-            for a in &args {
+            for a in &ctx.optargs {
                 if let Ok(n) = a.parse::<i32>() {
                     if let Some(name) = signal_name(n) {
                         println!("{}", name);
@@ -62,24 +60,22 @@ fn kill_main(ctx: &mut Context) -> u8 {
     let mut start = 0;
 
     if !sig_name.is_empty() {
-        sig = signal_number(&sig_name).unwrap_or(15);
-    } else if !args.is_empty() {
-        let a = &args[0];
-        if a.starts_with('-') {
-            let s = &a[1..];
+        sig = signal_number(sig_name).unwrap_or(15);
+    } else if !ctx.optargs.is_empty() {
+        let a = &ctx.optargs[0];
+        if let Some(s) = a.strip_prefix('-') {
             if let Ok(n) = s.parse::<i32>() {
                 sig = n;
-                start = 1;
             } else {
                 sig = signal_number(s).unwrap_or(15);
-                start = 1;
             }
+            start = 1;
         }
     }
 
     // Send the signal to each listed PID.
     let mut exit_code: u8 = 0;
-    for arg in &args[start..] {
+    for arg in &ctx.optargs[start..] {
         if let Ok(pid) = arg.parse::<i32>() {
             unsafe {
                 if libc::kill(pid, sig) != 0 {

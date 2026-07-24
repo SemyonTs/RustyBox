@@ -164,18 +164,25 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
     let bit_of = |pos: usize| -> u32 { (specs.len() - 1 - pos) as u32 };
 
     let mut parsed = ParsedOpts::default();
-    let mut positional: Vec<String> = Vec::new();
-    let mut argv_iter = ctx.argv.iter().skip(1).cloned().peekable();
+    let argv = &ctx.argv;
+    let mut i = 1; // skip program name
     let mut done = false;
 
-    while let Some(arg) = argv_iter.next() {
+    // Reuse ctx.optargs instead of allocating a new Vec.
+    ctx.optargs.clear();
+
+    while i < argv.len() {
+        let arg = &argv[i];
+
         if done {
-            positional.push(arg);
+            ctx.optargs.push(arg.clone());
+            i += 1;
             continue;
         }
 
         if arg == "--" {
             done = true;
+            i += 1;
             continue;
         }
 
@@ -196,20 +203,29 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
             if spec.takes_arg {
                 let val = match largs {
                     Some(v) => v,
-                    None => argv_iter
-                        .next()
-                        .ok_or_else(|| format!("option --{} requires an argument", lname))?,
+                    None => {
+                        i += 1;
+                        if i >= argv.len() {
+                            return Err(format!("option --{} requires an argument", lname));
+                        }
+                        argv[i].clone()
+                    }
                 };
                 store_arg(&mut parsed, spec, val)?;
             } else {
                 *parsed.counts.entry('\0').or_insert(0) += 1;
             }
+            i += 1;
         }
         // Short option(s).
         else if arg.starts_with('-') && arg.len() > 1 {
             let mut chars = arg[1..].chars().peekable();
-
-            while let Some(ch) = chars.next() {
+            // Process each character in the cluster.
+            loop {
+                let ch = match chars.next() {
+                    Some(c) => c,
+                    None => break,
+                };
                 let pos = specs
                     .iter()
                     .position(|s| s.ch == ch)
@@ -222,20 +238,24 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
                     let val = if !rest.is_empty() {
                         rest
                     } else {
-                        argv_iter
-                            .next()
-                            .ok_or_else(|| format!("option -{} requires an argument", ch))?
+                        i += 1;
+                        if i >= argv.len() {
+                            return Err(format!("option -{} requires an argument", ch));
+                        }
+                        argv[i].clone()
                     };
-                    chars = "".chars().peekable();
+                    chars = "".chars().peekable(); // exhausted
                     store_arg(&mut parsed, spec, val)?;
                 } else {
                     *parsed.counts.entry(ch).or_insert(0) += 1;
                 }
             }
+            i += 1;
         }
         // Positional argument.
         else {
-            positional.push(arg);
+            ctx.optargs.push(arg.clone());
+            i += 1;
             if stop_at_first_nonopt {
                 done = true;
             }
@@ -243,22 +263,21 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
     }
 
     // Enforce positional-argument count constraints.
-    if positional.len() < min_args {
+    if ctx.optargs.len() < min_args {
         return Err(format!(
             "not enough arguments: need at least {}, got {}",
             min_args,
-            positional.len()
+            ctx.optargs.len()
         ));
     }
-    if positional.len() > max_args {
+    if ctx.optargs.len() > max_args {
         return Err(format!(
             "too many arguments: maximum {}, got {}",
             max_args,
-            positional.len()
+            ctx.optargs.len()
         ));
     }
 
-    ctx.optargs = positional;
     Ok(parsed)
 }
 

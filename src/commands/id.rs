@@ -19,6 +19,7 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
+use std::ffi::CStr;
 
 /// Entry point for the `id` builtin.
 ///
@@ -64,16 +65,24 @@ fn id_main(ctx: &mut Context) -> u8 {
     // -G: print all supplementary group IDs.
     if flag_G {
         let groups = get_groups();
-        if flag_n {
-            let names: Vec<String> = groups
-                .iter()
-                .map(|g| groupname(*g).unwrap_or_else(|| g.to_string()))
-                .collect();
-            println!("{}", names.join(" "));
-        } else {
-            let ids: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
-            println!("{}", ids.join(" "));
+        let mut out = String::with_capacity(groups.len() * 16);
+        for (i, g) in groups.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            if flag_n {
+                if let Some(name) = groupname(*g) {
+                    out.push_str(&name);
+                } else {
+                    use std::fmt::Write;
+                    write!(out, "{}", g).unwrap();
+                }
+            } else {
+                use std::fmt::Write;
+                write!(out, "{}", g).unwrap();
+            }
         }
+        println!("{out}");
         return 0;
     }
 
@@ -81,20 +90,27 @@ fn id_main(ctx: &mut Context) -> u8 {
     let uname = username(uid).unwrap_or_else(|| uid.to_string());
     let gname = groupname(gid).unwrap_or_else(|| gid.to_string());
     let groups = get_groups();
-    let gnames: Vec<String> = groups
-        .iter()
-        .map(|g| format!("{}", groupname(*g).unwrap_or_else(|| g.to_string())))
-        .collect();
+
+    let mut groups_out = String::with_capacity(groups.len() * 32);
+    for (i, g) in groups.iter().enumerate() {
+        if i > 0 {
+            groups_out.push(',');
+        }
+        if let Some(name) = groupname(*g) {
+            use std::fmt::Write;
+            write!(groups_out, "{}({})", *g, name).unwrap();
+        } else {
+            use std::fmt::Write;
+            write!(groups_out, "{}", *g).unwrap();
+        }
+    }
 
     println!(
-        "uid={}({}) gid={}({}) groups={}",
-        uid,
-        uname,
-        gid,
-        gname,
-        gnames.join(",")
+        "uid={}({}) gid={}({}) groups={groups_out}",
+        uid, uname, gid, gname
     );
 
+    let _ = opts;
     0
 }
 
@@ -108,7 +124,7 @@ fn username(uid: u32) -> Option<String> {
         if pw.is_null() {
             None
         } else {
-            let name = std::ffi::CStr::from_ptr((*pw).pw_name);
+            let name = CStr::from_ptr((*pw).pw_name);
             Some(name.to_string_lossy().into_owned())
         }
     }
@@ -124,7 +140,7 @@ fn groupname(gid: u32) -> Option<String> {
         if gr.is_null() {
             None
         } else {
-            let name = std::ffi::CStr::from_ptr((*gr).gr_name);
+            let name = CStr::from_ptr((*gr).gr_name);
             Some(name.to_string_lossy().into_owned())
         }
     }
@@ -142,14 +158,13 @@ fn get_groups() -> Vec<u32> {
             return vec![libc::getgid()];
         }
 
-        let mut groups: Vec<libc::gid_t> = Vec::with_capacity(ngroups as usize);
-        groups.resize(ngroups as usize, 0);
-
+        let mut groups: Vec<libc::gid_t> = vec![0; ngroups as usize];
         let count = libc::getgroups(ngroups, groups.as_mut_ptr());
         if count < 0 {
             vec![libc::getgid()]
         } else {
-            groups[..count as usize].to_vec()
+            groups.truncate(count as usize);
+            groups
         }
     }
 }

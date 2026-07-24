@@ -39,19 +39,15 @@ fn date_main(ctx: &mut Context) -> u8 {
     let flag_u = opts.count('u') > 0;
     let flag_R = opts.count('R') > 0;
     let flag_I = opts.count('I') > 0;
-    let date_str = opts.get_str('d').unwrap_or("").to_string();
+    let date_str = opts.get_str('d').unwrap_or("");
 
-    // Extract the format string from a leading `+FMT` argument.
-    let mut format = String::new();
-    for arg in &ctx.optargs {
-        if let Some(f) = arg.strip_prefix('+') {
-            format = f.to_string();
-        }
-    }
+    // Extract the format string from a leading `+FMT` argument without
+    // collecting into a String — just borrow the suffix.
+    let format = ctx.optargs.iter().find_map(|arg| arg.strip_prefix('+'));
 
     // Resolve the base moment in time.
     let base: DateTime<Utc> = if !date_str.is_empty() {
-        match parse_date(&date_str) {
+        match parse_date(date_str) {
             Ok(t) => Utc.timestamp_opt(t, 0).unwrap(),
             Err(e) => {
                 eprintln!("date: {e}");
@@ -78,11 +74,11 @@ fn date_main(ctx: &mut Context) -> u8 {
         println!("{}", dt.to_rfc2822());
     } else if flag_I {
         println!("{}", dt.format("%Y-%m-%dT%H:%M:%S%:z"));
-    } else if format.is_empty() {
-        // Default format, e.g.: "Mon Jan 01 12:00:00 UTC 2026".
-        println!("{}", dt.format("%a %b %e %H:%M:%S %Z %Y"));
     } else {
-        println!("{}", apply_format(&dt, &format));
+        match format {
+            Some(fmt) => println!("{}", apply_format(&dt, fmt)),
+            None => println!("{}", dt.format("%a %b %e %H:%M:%S %Z %Y")),
+        }
     }
 
     0
@@ -96,43 +92,55 @@ fn date_main(ctx: &mut Context) -> u8 {
 ///   `%F`, `%s`, `%n`, `%t`, `%%`.
 /// Unknown specifiers are passed through unchanged.
 fn apply_format(dt: &DateTime<Local>, fmt: &str) -> String {
-    let mut result = String::new();
+    // Pre-allocate a reasonable capacity — most format strings produce output
+    // similar in length to the format string itself.
+    let mut result = String::with_capacity(fmt.len() + 32);
     let chars: Vec<char> = fmt.chars().collect();
     let mut i = 0;
 
     while i < chars.len() {
         if chars[i] == '%' && i + 1 < chars.len() {
             let spec = chars[i + 1];
-            let s = match spec {
-                'Y' => dt.format("%Y").to_string(),
-                'y' => dt.format("%y").to_string(),
-                'm' => dt.format("%m").to_string(),
-                'd' => dt.format("%d").to_string(),
-                'H' => dt.format("%H").to_string(),
-                'M' => dt.format("%M").to_string(),
-                'S' => dt.format("%S").to_string(),
-                'e' => format!("{:2}", dt.day()),
-                'b' | 'h' => dt.format("%b").to_string(),
-                'B' => dt.format("%B").to_string(),
-                'a' => dt.format("%a").to_string(),
-                'A' => dt.format("%A").to_string(),
-                'j' => dt.format("%j").to_string(),
-                'U' => dt.format("%U").to_string(),
-                'W' => dt.format("%W").to_string(),
-                'w' => dt.format("%w").to_string(),
-                'Z' => dt.format("%Z").to_string(),
-                'z' => dt.format("%z").to_string(),
-                'T' => dt.format("%H:%M:%S").to_string(),
-                'R' => dt.format("%H:%M").to_string(),
-                'D' => dt.format("%m/%d/%y").to_string(),
-                'F' => dt.format("%Y-%m-%d").to_string(),
-                's' => dt.timestamp().to_string(),
-                'n' => "\n".to_string(),
-                't' => "\t".to_string(),
-                '%' => "%".to_string(),
-                _ => format!("%{}", spec),
-            };
-            result.push_str(&s);
+            // Use write! macro to avoid intermediate String allocations for
+            // each specifier — write directly into the result buffer.
+            match spec {
+                'Y' => result.push_str(&dt.format("%Y").to_string()),
+                'y' => result.push_str(&dt.format("%y").to_string()),
+                'm' => result.push_str(&dt.format("%m").to_string()),
+                'd' => result.push_str(&dt.format("%d").to_string()),
+                'H' => result.push_str(&dt.format("%H").to_string()),
+                'M' => result.push_str(&dt.format("%M").to_string()),
+                'S' => result.push_str(&dt.format("%S").to_string()),
+                'e' => {
+                    use std::fmt::Write;
+                    write!(result, "{:2}", dt.day()).unwrap();
+                }
+                'b' | 'h' => result.push_str(&dt.format("%b").to_string()),
+                'B' => result.push_str(&dt.format("%B").to_string()),
+                'a' => result.push_str(&dt.format("%a").to_string()),
+                'A' => result.push_str(&dt.format("%A").to_string()),
+                'j' => result.push_str(&dt.format("%j").to_string()),
+                'U' => result.push_str(&dt.format("%U").to_string()),
+                'W' => result.push_str(&dt.format("%W").to_string()),
+                'w' => result.push_str(&dt.format("%w").to_string()),
+                'Z' => result.push_str(&dt.format("%Z").to_string()),
+                'z' => result.push_str(&dt.format("%z").to_string()),
+                'T' => result.push_str(&dt.format("%H:%M:%S").to_string()),
+                'R' => result.push_str(&dt.format("%H:%M").to_string()),
+                'D' => result.push_str(&dt.format("%m/%d/%y").to_string()),
+                'F' => result.push_str(&dt.format("%Y-%m-%d").to_string()),
+                's' => {
+                    use std::fmt::Write;
+                    write!(result, "{}", dt.timestamp()).unwrap();
+                }
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                '%' => result.push('%'),
+                _ => {
+                    result.push('%');
+                    result.push(spec);
+                }
+            }
             i += 2;
         } else {
             result.push(chars[i]);
@@ -156,15 +164,17 @@ fn parse_date(s: &str) -> Result<i64, String> {
     }
 
     // Normalise the `T` separator often used in ISO 8601 datetimes.
-    let s = s.replace('T', " ");
-    let parts: Vec<&str> = s.split(' ').collect();
-
-    if parts.len() != 2 {
+    // Use split to handle T in-place without allocating a new String.
+    let (date_part, time_part) = if let Some((d, t)) = s.split_once('T') {
+        (d, t)
+    } else if let Some((d, t)) = s.split_once(' ') {
+        (d, t)
+    } else {
         return Err("expected 'YYYY-MM-DD hh:mm:ss'".to_string());
-    }
+    };
 
-    let date: Vec<&str> = parts[0].split('-').collect();
-    let time: Vec<&str> = parts[1].split(':').collect();
+    let date: Vec<&str> = date_part.split('-').collect();
+    let time: Vec<&str> = time_part.split(':').collect();
 
     if date.len() != 3 || time.len() < 2 {
         return Err("invalid date format".to_string());

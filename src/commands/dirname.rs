@@ -27,9 +27,15 @@ fn dirname_main(ctx: &mut Context) -> u8 {
         }
     };
 
+    // Collect output lines into a single buffer to minimize write syscalls.
+    // dirname output is tiny (a few bytes per line), so buffering here is
+    // mostly about syscall reduction, not throughput.
+    let mut out = String::with_capacity(ctx.optargs.len() * 32);
     for path in &ctx.optargs {
-        println!("{}", posix_dirname(path));
+        out.push_str(posix_dirname(path));
+        out.push('\n');
     }
+    print!("{out}");
 
     let _ = opts;
     0
@@ -51,11 +57,6 @@ fn posix_dirname(path: &str) -> &str {
         return ".";
     }
 
-    // A path with no slashes at all has no directory component.
-    if !path.contains('/') {
-        return ".";
-    }
-
     // Strip trailing slashes so they do not interfere with the split.
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
@@ -63,11 +64,16 @@ fn posix_dirname(path: &str) -> &str {
         return "/";
     }
 
+    // A path with no slashes after trimming has no directory component.
+    // This also covers the case where the only slash was trailing, e.g. "usr/".
+    if !trimmed.contains('/') {
+        return ".";
+    }
+
     // Find the last slash and return everything before it.
     match trimmed.rsplit_once('/') {
-        Some((dir, _base)) => {
+        Some((dir, _)) => {
             if dir.is_empty() {
-                // The path started with a slash (e.g. "/usr" → dir is empty).
                 "/"
             } else {
                 dir

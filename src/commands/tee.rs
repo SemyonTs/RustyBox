@@ -17,7 +17,7 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 
 /// Entry point for the `tee` builtin.
 ///
@@ -33,11 +33,10 @@ fn tee_main(ctx: &mut Context) -> u8 {
     };
 
     let flag_a = opts.count('a') > 0;
-    let files = ctx.optargs.clone();
 
-    // Open all output files.
-    let mut handles: Vec<std::fs::File> = Vec::new();
-    for f in &files {
+    // Open all output files, each wrapped in BufWriter for efficient writes.
+    let mut handles: Vec<BufWriter<std::fs::File>> = Vec::with_capacity(ctx.optargs.len());
+    for f in &ctx.optargs {
         match OpenOptions::new()
             .create(true)
             .write(true)
@@ -45,7 +44,7 @@ fn tee_main(ctx: &mut Context) -> u8 {
             .truncate(!flag_a)
             .open(f)
         {
-            Ok(h) => handles.push(h),
+            Ok(h) => handles.push(BufWriter::new(h)),
             Err(e) => {
                 eprintln!("tee: '{}': {}", f, e);
                 return 1;
@@ -54,19 +53,28 @@ fn tee_main(ctx: &mut Context) -> u8 {
     }
 
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout().lock();
+    let mut reader = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
     let mut buf = [0u8; 4096];
 
     // Copy stdin to stdout and all output files.
     loop {
-        let n = stdin.lock().read(&mut buf).unwrap_or(0);
-        if n == 0 {
-            break;
-        }
-        stdout.write_all(&buf[..n]).ok();
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        out.write_all(&buf[..n]).ok();
         for h in &mut handles {
             h.write_all(&buf[..n]).ok();
         }
+    }
+
+    // Flush all buffered writers.
+    out.flush().ok();
+    for h in &mut handles {
+        h.flush().ok();
     }
 
     0

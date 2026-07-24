@@ -29,19 +29,25 @@ use std::path::Path;
 ///
 /// When invoked as `[` the last argument must be `]`.
 fn test_main(ctx: &mut Context) -> u8 {
-    let mut args: Vec<String> = ctx.optargs.clone();
-
     let name = ctx.which.name;
+    let len = ctx.optargs.len();
+
     if name == "[" {
-        if args.last().map(|s| s == "]").unwrap_or(false) {
-            args.pop();
+        if len > 0 && ctx.optargs[len - 1] == "]" {
+            // Evaluate all args except the trailing "]".
+            // No cloning — pass a slice.
+            if eval_expr(&ctx.optargs[..len - 1]) {
+                return 0;
+            } else {
+                return 1;
+            }
         } else {
             eprintln!("[: missing ']'");
             return 2;
         }
     }
 
-    if eval_expr(&args) { 0 } else { 1 }
+    if eval_expr(&ctx.optargs) { 0 } else { 1 }
 }
 
 /// Evaluate a complete expression from a list of tokens.
@@ -74,8 +80,7 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_and();
         while self.peek() == Some("-o") {
             self.next();
-            let right = self.parse_and();
-            left = left || right;
+            left = left || self.parse_and();
         }
         left
     }
@@ -85,8 +90,7 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_unary();
         while self.peek() == Some("-a") {
             self.next();
-            let right = self.parse_unary();
-            left = left && right;
+            left = left && self.parse_unary();
         }
         left
     }
@@ -112,9 +116,8 @@ impl<'a> Parser<'a> {
 
         // Unary operator: -X ARG.
         if let Some(tok) = self.peek() {
-            if tok.starts_with('-') && tok.len() == 2 {
-                let op = &tok[1..];
-                if is_unary(op) {
+            if let Some(op) = tok.strip_prefix('-') {
+                if op.len() == 1 && is_unary(op) {
                     self.next();
                     if let Some(arg) = self.next() {
                         return eval_unary(op, arg);
@@ -125,11 +128,11 @@ impl<'a> Parser<'a> {
         }
 
         // Binary operator: ARG OP ARG.
-        if self.args.len() >= self.pos + 3 {
+        if self.pos + 2 < self.args.len() {
             let a = &self.args[self.pos];
             let op = &self.args[self.pos + 1];
-            let b = &self.args[self.pos + 2];
             if is_binary(op) {
+                let b = &self.args[self.pos + 2];
                 self.pos += 3;
                 return eval_binary(a, op, b);
             }

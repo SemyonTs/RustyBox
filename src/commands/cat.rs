@@ -46,13 +46,18 @@ fn cat_main(ctx: &mut Context) -> u8 {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
+    // Pre-allocate a single read buffer to be reused across all files.
+    let mut buf = vec![0u8; BUFSZ];
+
     // No file arguments — read from stdin.
     if ctx.optargs.is_empty() {
         let mut stdin = io::stdin().lock();
         let res = if fast_path {
             io::copy(&mut stdin, &mut out).map(|_| ())
         } else {
-            process(&mut stdin, flag_u, flag_v, flag_t, flag_e, &mut out)
+            process(
+                &mut stdin, &mut buf, flag_u, flag_v, flag_t, flag_e, &mut out,
+            )
         };
         if let Err(e) = res {
             eprintln!("cat: stdin: {e}");
@@ -67,7 +72,9 @@ fn cat_main(ctx: &mut Context) -> u8 {
             let res = if fast_path {
                 io::copy(&mut stdin, &mut out).map(|_| ())
             } else {
-                process(&mut stdin, flag_u, flag_v, flag_t, flag_e, &mut out)
+                process(
+                    &mut stdin, &mut buf, flag_u, flag_v, flag_t, flag_e, &mut out,
+                )
             };
             if let Err(e) = res {
                 eprintln!("cat: stdin: {e}");
@@ -79,7 +86,9 @@ fn cat_main(ctx: &mut Context) -> u8 {
                     let res = if fast_path {
                         io::copy(&mut file, &mut out).map(|_| ())
                     } else {
-                        process(&mut file, flag_u, flag_v, flag_t, flag_e, &mut out)
+                        process(
+                            &mut file, &mut buf, flag_u, flag_v, flag_t, flag_e, &mut out,
+                        )
                     };
                     if let Err(e) = res {
                         eprintln!("cat: {name}: {e}");
@@ -94,7 +103,7 @@ fn cat_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    // Сброс stdout после всех операций (на случай, если process не до конца опустошил буфер)
+    // Flush stdout after all operations (in case process didn't fully drain the buffer).
     if let Err(e) = out.flush() {
         eprintln!("cat: stdout: {e}");
         exit_code = 1;
@@ -105,40 +114,41 @@ fn cat_main(ctx: &mut Context) -> u8 {
 
 /// Read from a reader and write its contents to `out` according to flags.
 ///
-/// В быстром пути (u=v=t=e=false) не вызывается — вместо него работает io::copy.
-/// При -u читает побайтово, при -v/-t/-e применяет визуализацию с буферизацией.
+/// In fast path (u=v=t=e=false) this function is not used — io::copy takes over.
+/// When -u is given, reads byte by byte; otherwise uses the supplied `buf` for
+/// buffered reading and passes each byte to `write_visualized`.
 fn process<R: Read, W: Write>(
     reader: &mut R,
+    buf: &mut [u8],
     u: bool,
     v: bool,
     t: bool,
     e: bool,
     out: &mut W,
 ) -> io::Result<()> {
-    // Unbuffered mode: byte by byte, никакой буферизации.
+    // Unbuffered mode: byte by byte, no buffering.
     if u {
-        let mut buf = [0u8; 1];
+        let mut byte_buf = [0u8; 1];
         loop {
-            let len = reader.read(&mut buf)?;
+            let len = reader.read(&mut byte_buf)?;
             if len == 0 {
                 break;
             }
             if v || t || e {
-                write_visualized(buf[0], v, t, e, out)?;
+                write_visualized(byte_buf[0], v, t, e, out)?;
             } else {
-                out.write_all(&buf)?;
+                out.write_all(&byte_buf)?;
             }
         }
         return Ok(());
     }
 
-    // Buffered visualization mode: BufWriter для снижения накладных расходов.
-    // write_visualized пишет сразу в буферизированный поток, без сбора в Vec.
+    // Buffered visualization mode: BufWriter to reduce syscall overhead.
+    // write_visualized writes directly into the buffered stream.
     let mut writer = BufWriter::with_capacity(BUFSZ, out);
-    let mut buf = vec![0u8; BUFSZ];
 
     loop {
-        let len = reader.read(&mut buf)?;
+        let len = reader.read(buf)?;
         if len == 0 {
             break;
         }

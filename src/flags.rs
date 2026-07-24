@@ -43,14 +43,17 @@ impl CommandFlags {
         self.0
     }
 
-    /// Construct `CommandFlags` from a raw `u32`, truncating unknown bits.
-    pub const fn from_bits_truncate(bits: u32) -> Self {
-        CommandFlags(bits)
-    }
-
     /// Return `true` if all flags in `other` are set.
     pub const fn contains(self, other: CommandFlags) -> bool {
         self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for CommandFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        CommandFlags(self.0 | rhs.0)
     }
 }
 

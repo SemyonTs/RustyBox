@@ -73,10 +73,7 @@ fn touch_main(ctx: &mut Context) -> u8 {
             }
         }
     } else {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs();
         (now, now)
     };
 
@@ -153,15 +150,17 @@ fn to_system_time(secs: i64) -> SystemTime {
 
 /// Set access and modification times on a regular file or directory.
 fn set_file_times(file: &str, atime: Option<i64>, mtime: Option<i64>) -> std::io::Result<()> {
-    let a: FileTime = to_system_time(atime.unwrap_or_else(now_secs)).into();
-    let m: FileTime = to_system_time(mtime.unwrap_or_else(now_secs)).into();
+    let now = SystemTime::now();
+    let a: FileTime = atime.map_or(now, |t| to_system_time(t)).into();
+    let m: FileTime = mtime.map_or(now, |t| to_system_time(t)).into();
     filetime::set_file_times(file, a, m)
 }
 
 /// Set access and modification times on a symlink itself (`-h`).
 fn set_symlink_times(file: &str, atime: Option<i64>, mtime: Option<i64>) -> std::io::Result<()> {
-    let a: FileTime = to_system_time(atime.unwrap_or_else(now_secs)).into();
-    let m: FileTime = to_system_time(mtime.unwrap_or_else(now_secs)).into();
+    let now = SystemTime::now();
+    let a: FileTime = atime.map_or(now, |t| to_system_time(t)).into();
+    let m: FileTime = mtime.map_or(now, |t| to_system_time(t)).into();
     filetime::set_symlink_file_times(file, a, m)
 }
 
@@ -175,15 +174,17 @@ fn now_secs() -> i64 {
 
 /// Parse a `-d` date string: `YYYY-MM-DD hh:mm:ss` (or with `T` separator).
 fn parse_date(s: &str) -> Result<i64, String> {
-    let s = s.replace('T', " ");
-    let parts: Vec<&str> = s.split(' ').collect();
-
-    if parts.len() != 2 {
+    // Split on 'T' or ' ' without allocating a new String.
+    let (date_part, time_part) = if let Some((d, t)) = s.split_once('T') {
+        (d, t)
+    } else if let Some((d, t)) = s.split_once(' ') {
+        (d, t)
+    } else {
         return Err("expected 'YYYY-MM-DD hh:mm:ss'".to_string());
-    }
+    };
 
-    let date: Vec<&str> = parts[0].split('-').collect();
-    let time: Vec<&str> = parts[1].split(':').collect();
+    let date: Vec<&str> = date_part.split('-').collect();
+    let time: Vec<&str> = time_part.split(':').collect();
 
     if date.len() != 3 || time.len() < 2 {
         return Err("invalid date format".to_string());
@@ -205,51 +206,57 @@ fn parse_date(s: &str) -> Result<i64, String> {
 
 /// Parse a `-t` time string: `[[CC]YY]MMDDhhmm[.ss]`.
 fn parse_time(s: &str) -> Result<i64, String> {
-    let (main, _frac) = if let Some(i) = s.find('.') {
-        (&s[..i], &s[i + 1..])
-    } else {
-        (s, "")
+    let main = match s.find('.') {
+        Some(i) => &s[..i],
+        None => s,
     };
 
-    let digits: Vec<char> = main.chars().collect();
+    let digits = main.as_bytes();
+    let len = digits.len();
 
-    let (y, mo, d, h, mi, sec) = match digits.len() {
+    let (y, mo, d, h, mi, sec) = match len {
         8 => (
             1970,
-            to_num(&digits[0..2])?,
-            to_num(&digits[2..4])?,
-            to_num(&digits[4..6])?,
-            to_num(&digits[6..8])?,
+            two_digit(&digits[0..2])? as i64,
+            two_digit(&digits[2..4])? as i64,
+            two_digit(&digits[4..6])? as i64,
+            two_digit(&digits[6..8])? as i64,
             0,
         ),
         10 => (
-            to_num(&digits[0..2])? + 2000,
-            to_num(&digits[2..4])?,
-            to_num(&digits[4..6])?,
-            to_num(&digits[6..8])?,
-            to_num(&digits[8..10])?,
+            two_digit(&digits[0..2])? as i64 + 2000,
+            two_digit(&digits[2..4])? as i64,
+            two_digit(&digits[4..6])? as i64,
+            two_digit(&digits[6..8])? as i64,
+            two_digit(&digits[8..10])? as i64,
             0,
         ),
-        12 => (
-            to_num(&digits[0..4])?,
-            to_num(&digits[4..6])?,
-            to_num(&digits[6..8])?,
-            to_num(&digits[8..10])?,
-            to_num(&digits[10..12])?,
-            0,
-        ),
+        12 => {
+            let y = ((digits[0] - b'0') as i64 * 1000)
+                + ((digits[1] - b'0') as i64 * 100)
+                + ((digits[2] - b'0') as i64 * 10)
+                + (digits[3] - b'0') as i64;
+            (
+                y,
+                two_digit(&digits[4..6])? as i64,
+                two_digit(&digits[6..8])? as i64,
+                two_digit(&digits[8..10])? as i64,
+                two_digit(&digits[10..12])? as i64,
+                0,
+            )
+        }
         _ => return Err("expected [[CC]YY]MMDDhhmm".to_string()),
     };
 
     unix_from_ymdhms(y, mo, d, h, mi, sec)
 }
 
-/// Parse a slice of `char` into an `i64`.
-fn to_num(d: &[char]) -> Result<i64, String> {
-    d.iter()
-        .collect::<String>()
-        .parse::<i64>()
-        .map_err(|_| "not a number".to_string())
+/// Parse two ASCII digits into a u32.
+fn two_digit(d: &[u8]) -> Result<u32, String> {
+    if d.len() != 2 || !d[0].is_ascii_digit() || !d[1].is_ascii_digit() {
+        return Err("not a number".to_string());
+    }
+    Ok(((d[0] - b'0') * 10 + (d[1] - b'0')) as u32)
 }
 
 /// Convert year, month, day, hour, minute, second to seconds since the Unix

@@ -27,7 +27,7 @@ use crate::context::Context;
 use crate::flags::CommandFlags;
 use regex::Regex;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 /// A single parsed sed command.
 enum Command {
@@ -46,8 +46,7 @@ enum Command {
 /// Entry point for the `sed` builtin.
 ///
 /// Scripts are accumulated from `-e` options, `-f` files, and (if neither is
-/// supplied) the first positional argument.  Multiple scripts are
-/// concatenated with `;` separators.
+/// supplied) the first positional argument.
 fn sed_main(ctx: &mut Context) -> u8 {
     let opts = match crate::args::parse(ctx, "ne:f:") {
         Ok(o) => o,
@@ -59,6 +58,7 @@ fn sed_main(ctx: &mut Context) -> u8 {
 
     let flag_n = opts.count('n') > 0;
 
+    // Accumulate script strings without cloning the entire optargs.
     let mut scripts: Vec<String> = Vec::new();
 
     if let Some(e) = opts.get_str('e') {
@@ -77,14 +77,18 @@ fn sed_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    let mut args: Vec<String> = ctx.optargs.clone();
-    if scripts.is_empty() {
-        if args.is_empty() {
+    // Determine file arguments: if no -e/-f were given, the first positional
+    // argument is the script. The rest are files (or "-" if none).
+    let files: &[String] = if scripts.is_empty() {
+        if ctx.optargs.is_empty() {
             eprintln!("sed: no script specified");
             return 1;
         }
-        scripts.push(args.remove(0));
-    }
+        scripts.push(ctx.optargs[0].clone());
+        &ctx.optargs[1..]
+    } else {
+        &ctx.optargs[..]
+    };
 
     // Compile all scripts into a flat list of commands.
     let mut cmds = Vec::new();
@@ -98,43 +102,81 @@ fn sed_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        args
-    };
-
     let stdout = std::io::stdout();
-    let mut out = stdout.lock();
+    let mut writer = BufWriter::new(stdout.lock());
     let mut exit_code: u8 = 0;
 
-    for file in &files {
-        let reader: Box<dyn BufRead> = if file == "-" {
-            Box::new(std::io::stdin().lock())
-        } else {
-            match File::open(file) {
-                Ok(f) => Box::new(BufReader::new(f)),
-                Err(e) => {
-                    eprintln!("sed: '{}': {}", file, e);
-                    exit_code = 1;
-                    continue;
-                }
-            }
-        };
+    // Reusable line buffer for processing.
+    let mut line_buf = String::with_capacity(256);
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if let Err(e) = process_line(&line, &cmds, flag_n, &mut out) {
-                eprintln!("sed: {e}");
-                exit_code = 1;
+    if files.is_empty() {
+        // stdin only.
+        exit_code = process_reader(
+            &mut std::io::stdin().lock(),
+            &cmds,
+            flag_n,
+            &mut writer,
+            &mut line_buf,
+        );
+    } else {
+        for file in files {
+            if file == "-" {
+                exit_code |= process_reader(
+                    &mut std::io::stdin().lock(),
+                    &cmds,
+                    flag_n,
+                    &mut writer,
+                    &mut line_buf,
+                );
+            } else {
+                match File::open(file) {
+                    Ok(f) => {
+                        let mut reader = BufReader::new(f);
+                        exit_code |=
+                            process_reader(&mut reader, &cmds, flag_n, &mut writer, &mut line_buf);
+                    }
+                    Err(e) => {
+                        eprintln!("sed: '{}': {}", file, e);
+                        exit_code = 1;
+                    }
+                }
             }
         }
     }
 
+    writer.flush().ok();
     exit_code
+}
+
+/// Process all lines from a buffered reader through the compiled commands.
+fn process_reader(
+    reader: &mut dyn BufRead,
+    cmds: &[Command],
+    flag_n: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+    line_buf: &mut String,
+) -> u8 {
+    loop {
+        line_buf.clear();
+        match reader.read_line(line_buf) {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(_) => return 1,
+        }
+
+        // Remove trailing newline for consistent processing, then add it back on output.
+        let line = if line_buf.ends_with('\n') {
+            &line_buf[..line_buf.len() - 1]
+        } else {
+            &line_buf[..]
+        };
+
+        if let Err(e) = process_line(line, cmds, flag_n, writer) {
+            eprintln!("sed: {e}");
+            return 1;
+        }
+    }
+    0
 }
 
 /// Parse a script string (possibly containing `;`-separated commands) into a
@@ -193,14 +235,14 @@ fn parse_command(s: &str) -> Result<Command, String> {
 }
 
 /// Apply the list of commands to a single input line and write the result
-/// to `out`.
+/// to `writer`.
 fn process_line<W: Write>(
     line: &str,
     cmds: &[Command],
     flag_n: bool,
-    out: &mut W,
+    writer: &mut W,
 ) -> Result<(), String> {
-    let mut current = line.to_string();
+    let mut current: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(line);
     let mut deleted = false;
     let mut printed = false;
 
@@ -212,13 +254,19 @@ fn process_line<W: Write>(
                 global,
             } => {
                 if *global {
-                    current = pattern.replace_all(&current, repl.as_str()).to_string();
+                    current = std::borrow::Cow::Owned(
+                        pattern
+                            .replace_all(current.as_ref(), repl.as_str())
+                            .to_string(),
+                    );
                 } else {
-                    current = pattern.replace(&current, repl.as_str()).to_string();
+                    current = std::borrow::Cow::Owned(
+                        pattern.replace(current.as_ref(), repl.as_str()).to_string(),
+                    );
                 }
             }
             Command::Print => {
-                writeln!(out, "{}", current).map_err(|e| e.to_string())?;
+                writeln!(writer, "{}", current).map_err(|e| e.to_string())?;
                 printed = true;
             }
             Command::Delete => {
@@ -226,17 +274,17 @@ fn process_line<W: Write>(
                 break;
             }
             Command::Append(text) => {
-                writeln!(out, "{}", current).map_err(|e| e.to_string())?;
-                writeln!(out, "{}", text).map_err(|e| e.to_string())?;
+                writeln!(writer, "{}", current).map_err(|e| e.to_string())?;
+                writeln!(writer, "{}", text).map_err(|e| e.to_string())?;
                 printed = true;
             }
             Command::Insert(text) => {
-                writeln!(out, "{}", text).map_err(|e| e.to_string())?;
-                writeln!(out, "{}", current).map_err(|e| e.to_string())?;
+                writeln!(writer, "{}", text).map_err(|e| e.to_string())?;
+                writeln!(writer, "{}", current).map_err(|e| e.to_string())?;
                 printed = true;
             }
             Command::Change(text) => {
-                writeln!(out, "{}", text).map_err(|e| e.to_string())?;
+                writeln!(writer, "{}", text).map_err(|e| e.to_string())?;
                 printed = true;
                 deleted = true;
                 break;
@@ -247,7 +295,7 @@ fn process_line<W: Write>(
     // Default print unless the line was deleted, -n is active, or an
     // explicit command already produced output.
     if !deleted && !flag_n && !printed {
-        writeln!(out, "{}", current).map_err(|e| e.to_string())?;
+        writeln!(writer, "{}", current).map_err(|e| e.to_string())?;
     }
 
     Ok(())

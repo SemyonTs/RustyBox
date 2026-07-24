@@ -40,8 +40,13 @@ fn basename_main(ctx: &mut Context) -> u8 {
     // The -s option implies multi-operand mode (-a).
     let all = flag_a || !suffix.is_empty();
 
-    let args: Vec<String> = if all {
-        ctx.optargs.clone()
+    if all {
+        // Multi-operand mode: iterate directly over optargs without cloning.
+        for name in &ctx.optargs {
+            let base = posix_basename(name);
+            let trimmed = strip_suffix(base, suffix);
+            println!("{trimmed}");
+        }
     } else {
         // Two-argument form: basename NAME [SUFFIX].
         if ctx.optargs.len() > 2 {
@@ -49,16 +54,8 @@ fn basename_main(ctx: &mut Context) -> u8 {
             return 1;
         }
         let suf = ctx.optargs.get(1).map(|s| s.as_str()).unwrap_or("");
-        let name = ctx.optargs[0].clone();
-        let base = posix_basename(&name);
+        let base = posix_basename(&ctx.optargs[0]);
         let trimmed = strip_suffix(base, suf);
-        println!("{trimmed}");
-        return 0;
-    };
-
-    for name in &args {
-        let base = posix_basename(name);
-        let trimmed = strip_suffix(base, suffix);
         println!("{trimmed}");
     }
 

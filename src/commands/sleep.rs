@@ -36,7 +36,7 @@ fn sleep_main(ctx: &mut Context) -> u8 {
     let mut total_nanos: u128 = 0;
     for arg in &ctx.optargs {
         match parse_duration(arg) {
-            Ok(d) => total_nanos += d.as_nanos(),
+            Ok(d) => total_nanos = total_nanos.saturating_add(d.as_nanos()),
             Err(e) => {
                 eprintln!("sleep: {e}");
                 return 1;
@@ -48,8 +48,6 @@ fn sleep_main(ctx: &mut Context) -> u8 {
     let dur = Duration::from_nanos(total_nanos.min(u64::MAX as u128) as u64);
     thread::sleep(dur);
 
-    // On SIGINT the OS terminates the process; if we reach this point the
-    // sleep completed uninterrupted.
     0
 }
 
@@ -64,7 +62,7 @@ fn sleep_main(ctx: &mut Context) -> u8 {
 /// Arithmetic is saturating so that overflow does not cause a panic.
 fn parse_duration(arg: &str) -> Result<Duration, String> {
     let bytes = arg.as_bytes();
-    if bytes.is_empty() || (!bytes[0].is_ascii_digit() && bytes[0] != b'.') {
+    if bytes.is_empty() || !bytes[0].is_ascii_digit() && bytes[0] != b'.' {
         return Err(format!("not a number: '{}'", arg));
     }
 

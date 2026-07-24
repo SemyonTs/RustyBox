@@ -23,7 +23,7 @@ use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs;
 use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Entry point for the `ln` builtin.
 ///
@@ -43,77 +43,85 @@ fn ln_main(ctx: &mut Context) -> u8 {
     let flag_n = opts.count('n') > 0;
     let flag_r = opts.count('r') > 0;
     let flag_s = opts.count('s') > 0 || flag_r; // -r implies symbolic link.
-    let flag_t = opts.count('T') > 0;
+    let flag_T = opts.count('T') > 0;
     let flag_v = opts.count('v') > 0;
     let target_dir = opts.get_str('t').unwrap_or("");
 
-    let mut args = ctx.optargs.clone();
-    if args.is_empty() {
-        args.push(".".to_string());
+    let n = ctx.optargs.len();
+    if n == 0 {
+        return 0; // Should not happen due to "<1", but be safe.
     }
 
     // -T: the destination must be treated as a regular file, limiting the
     // argument count to two.
-    if flag_t && args.len() > 2 {
+    if flag_T && n > 2 {
         eprintln!("ln: with -T at most 2 arguments are allowed");
         return 1;
     }
 
-    // Determine the destination (the last argument, unless -t overrides it).
-    let dest = if !target_dir.is_empty() {
-        target_dir.to_string()
+    // Determine the destination and sources without cloning the entire vector.
+    let (sources, dest): (&[String], &str) = if !target_dir.is_empty() {
+        // -t DIR: all args are sources, DIR is the destination.
+        (&ctx.optargs[..], target_dir)
     } else {
-        args.pop().unwrap()
+        // Last arg is destination, preceding are sources.
+        (&ctx.optargs[..n - 1], ctx.optargs[n - 1].as_str())
     };
 
     // Decide whether the destination is an existing directory.
-    let dest_is_dir = if flag_n || flag_t {
+    let dest_is_dir = if flag_n || flag_T {
         false
     } else {
-        fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false)
+        fs::metadata(dest).map(|m| m.is_dir()).unwrap_or(false)
     };
 
     let mut exit_code: u8 = 0;
-    let sources: Vec<String> = args;
 
-    for src in &sources {
+    // Pre-allocate reusable buffers for path construction.
+    let mut new_path = String::with_capacity(256);
+    let mut rel_buf = String::with_capacity(256);
+
+    for src in sources {
         // When the destination is a directory the link is placed inside it
         // using the source's base name.
-        let new = if dest_is_dir {
+        new_path.clear();
+        if dest_is_dir {
             let base = Path::new(src)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(src);
-            Path::new(&dest).join(base).to_string_lossy().into_owned()
+            new_path.push_str(dest);
+            new_path.push('/');
+            new_path.push_str(base);
         } else {
-            dest.clone()
+            new_path.push_str(dest);
         };
 
         // Resolve the link target: either the source itself or a relative
         // path from the new link's location.
-        let target = if flag_r {
-            match relative_path(&new, src) {
-                Some(r) => r,
-                None => {
-                    eprintln!("ln: cannot create relative link for '{}'", src);
-                    exit_code = 1;
-                    continue;
-                }
+        let target: &str = if flag_r {
+            rel_buf.clear();
+            if let Some(r) = relative_path_into(&new_path, src, &mut rel_buf) {
+                r
+            } else {
+                eprintln!("ln: cannot create relative link for '{}'", src);
+                exit_code = 1;
+                continue;
             }
         } else {
-            src.clone()
+            src.as_str()
         };
 
         // -f: remove any existing destination entry before linking.
         if flag_f {
-            let _ = fs::remove_file(&new);
-            let _ = fs::remove_dir(&new);
+            let _ = fs::remove_file(&new_path);
+            let _ = fs::remove_dir(&new_path);
         }
 
         let rc = if flag_s {
-            symlink(&target, &new).is_err()
+            symlink(target, &new_path).is_err()
         } else {
-            fs::hard_link(&target, &new).is_err()
+            fs::hard_link(target, &new_path).is_err()
         };
 
         if rc {
@@ -121,11 +129,11 @@ fn ln_main(ctx: &mut Context) -> u8 {
                 "ln: cannot create {} link from '{}' to '{}'",
                 if flag_s { "symbolic" } else { "hard" },
                 target,
-                new
+                new_path
             );
             exit_code = 1;
         } else if flag_v {
-            eprintln!("'{}' -> '{}'", new, target);
+            eprintln!("'{}' -> '{}'", new_path, target);
         }
     }
 
@@ -133,10 +141,10 @@ fn ln_main(ctx: &mut Context) -> u8 {
 }
 
 /// Compute a relative path from the directory that would contain `from`
-/// (the new link) to `to` (the link target).
+/// (the new link) to `to` (the link target), writing the result into `out`.
 ///
-/// Returns `None` if a relative path cannot be constructed.
-fn relative_path(from: &str, to: &str) -> Option<String> {
+/// Returns `Some(&str)` pointing into `out` on success, `None` on failure.
+fn relative_path_into<'a>(from: &str, to: &str, out: &'a mut String) -> Option<&'a str> {
     let from_parent = Path::new(from).parent().unwrap_or_else(|| Path::new("."));
     let from_can = canonicalize_light(from_parent.to_str().unwrap_or("."));
     let to_can = canonicalize_light(to);
@@ -153,23 +161,32 @@ fn relative_path(from: &str, to: &str) -> Option<String> {
         common += 1;
     }
 
-    let mut result = PathBuf::new();
+    out.clear();
 
     // Ascend out of the remaining `from_parent` components.
     for _ in common..from_comps.len() {
-        result.push("..");
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str("..");
     }
 
     // Append the divergent suffix of the target.
     for c in &to_comps[common..] {
-        result.push(c.as_os_str());
+        if !out.is_empty() {
+            out.push('/');
+        }
+        match c {
+            Component::Normal(s) => out.push_str(s.to_str().unwrap_or("")),
+            _ => out.push_str(&c.as_os_str().to_string_lossy()),
+        }
     }
 
-    if result.as_os_str().is_empty() {
-        Some(".".to_string())
-    } else {
-        Some(result.to_string_lossy().into_owned())
+    if out.is_empty() {
+        out.push('.');
     }
+
+    Some(out.as_str())
 }
 
 /// Lightweight path canonicalisation that resolves `.` and `..` segments
@@ -181,8 +198,8 @@ fn canonicalize_light(p: &str) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in Path::new(p).components() {
         match comp {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
+            Component::CurDir => {}
+            Component::ParentDir => {
                 if !out.pop() {
                     out.push("..");
                 }

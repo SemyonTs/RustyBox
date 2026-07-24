@@ -82,7 +82,7 @@ fn make_dir(path: &str, parents: bool, mode: u32, verbose: bool) -> bool {
     }
 
     if verbose {
-        println!("mkdir: created directory '{}'", path);
+        eprintln!("mkdir: created directory '{}'", path);
     }
 
     true
@@ -95,13 +95,13 @@ fn make_dir(path: &str, parents: bool, mode: u32, verbose: bool) -> bool {
 /// for symbolic operations.
 fn parse_mode(s: &str, base: u32) -> Result<u32, String> {
     // Octal: all characters are ASCII digits (POSIX treats these as octal).
-    if s.chars().all(|c| c.is_ascii_digit()) {
+    if s.as_bytes().iter().all(|c| c.is_ascii_digit()) {
         return u32::from_str_radix(s, 8).map_err(|_| "invalid octal".to_string());
     }
 
     // Leading-zero octal form.
-    if let Some(rest) = s.strip_prefix("0") {
-        if rest.chars().all(|c| c.is_ascii_digit()) {
+    if let Some(rest) = s.strip_prefix('0') {
+        if rest.as_bytes().iter().all(|c| c.is_ascii_digit()) {
             return u32::from_str_radix(rest, 8).map_err(|_| "invalid octal".to_string());
         }
     }
@@ -122,9 +122,10 @@ fn parse_symbolic(s: &str, base: u32) -> Result<u32, String> {
             continue;
         }
 
+        let bytes = clause.as_bytes();
+
         // Locate the boundary between the who-list and the operator.
         let mut who_end = 0;
-        let bytes = clause.as_bytes();
         while who_end < bytes.len() {
             match bytes[who_end] {
                 b'u' | b'g' | b'o' | b'a' => who_end += 1,
@@ -132,19 +133,17 @@ fn parse_symbolic(s: &str, base: u32) -> Result<u32, String> {
             }
         }
 
-        let who = &clause[..who_end];
-        let rest = &clause[who_end..];
-
-        if rest.is_empty() {
+        if who_end >= bytes.len() {
             return Err(format!("invalid mode clause '{}'", clause));
         }
 
-        let op = rest.as_bytes()[0];
+        let who = &clause[..who_end];
+        let op = bytes[who_end];
         if !matches!(op, b'+' | b'-' | b'=') {
             return Err(format!("expected +, -, or = in '{}'", clause));
         }
 
-        let perms = &rest[1..];
+        let perms = &clause[who_end + 1..];
 
         // Build the bitmask for the affected classes.
         let mut mask: u32 = 0;
@@ -164,12 +163,12 @@ fn parse_symbolic(s: &str, base: u32) -> Result<u32, String> {
 
         // Collect the requested permission bits.
         let mut bits: u32 = 0;
-        for c in perms.chars() {
+        for &c in perms.as_bytes() {
             match c {
-                'r' => bits |= 0o444,
-                'w' => bits |= 0o222,
-                'x' => bits |= 0o111,
-                _ => return Err(format!("unknown permission '{}'", c)),
+                b'r' => bits |= 0o444,
+                b'w' => bits |= 0o222,
+                b'x' => bits |= 0o111,
+                _ => return Err(format!("unknown permission '{}'", c as char)),
             }
         }
 

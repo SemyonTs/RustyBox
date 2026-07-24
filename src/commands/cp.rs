@@ -62,32 +62,33 @@ fn cp_main(ctx: &mut Context) -> u8 {
     let flag_u = opts.count('u') > 0;
     let flag_v = opts.count('v') > 0;
 
-    let mut args: Vec<String> = ctx.optargs.clone();
-    if args.len() < 2 {
+    let n = ctx.optargs.len();
+    if n < 2 {
         eprintln!("cp: not enough arguments");
         return 1;
     }
 
-    // The last argument is always the destination.
-    let dest = args.pop().unwrap();
-    let sources = args;
+    // The last argument is always the destination; all preceding are sources.
+    // No cloning — just slice the existing Vec.
+    let sources = &ctx.optargs[..n - 1];
+    let dest = &ctx.optargs[n - 1];
 
     let mut exit_code: u8 = 0;
 
     // If multiple sources are given the destination must be an existing
     // directory, or the operation will fail downstream.
-    let dest_is_dir = sources.len() > 1 || fs::metadata(&dest).map(|m| m.is_dir()).unwrap_or(false);
+    let dest_is_dir = sources.len() > 1 || fs::metadata(dest).map(|m| m.is_dir()).unwrap_or(false);
 
-    for src in &sources {
+    for src in sources {
         let target = if dest_is_dir {
-            Path::new(&dest).join(Path::new(src).file_name().unwrap_or_default())
+            Path::new(dest).join(Path::new(src).file_name().unwrap_or_default())
         } else {
-            PathBuf::from(&dest)
+            PathBuf::from(dest)
         };
 
         if let Err(e) = copy_one(
             src,
-            &target.to_string_lossy(),
+            target.to_str().unwrap_or_default(),
             flag_a,
             flag_d,
             flag_f,
@@ -134,7 +135,7 @@ fn copy_one(
             let new_dest = Path::new(dest).join(Path::new(src).file_name().unwrap_or_default());
             return copy_one(
                 src,
-                &new_dest.to_string_lossy(),
+                new_dest.to_str().unwrap_or_default(),
                 flag_a,
                 flag_d,
                 flag_f,
@@ -251,12 +252,12 @@ fn copy_dir(
     let rd = fs::read_dir(src).map_err(|e| format!("'{src}': {e}"))?;
     for item in rd {
         let entry = item.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = entry.file_name();
         let src_path = entry.path();
         let dest_path = Path::new(dest).join(&name);
         copy_one(
-            &src_path.to_string_lossy(),
-            &dest_path.to_string_lossy(),
+            src_path.to_str().unwrap_or_default(),
+            dest_path.to_str().unwrap_or_default(),
             flag_a,
             flag_d,
             flag_f,

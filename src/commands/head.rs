@@ -19,7 +19,7 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 
 /// Entry point for the `head` builtin.
 ///
@@ -39,76 +39,94 @@ fn head_main(ctx: &mut Context) -> u8 {
     let flag_q = opts.count('q') > 0;
     let flag_v = opts.count('v') > 0;
 
-    let args: Vec<String> = ctx.optargs.clone();
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
+    let mut exit_code: u8 = 0;
+    let multiple = ctx.optargs.len() > 1 && !flag_q;
+
+    // Reusable read buffer for byte-count mode — allocated once.
+    let mut byte_buf: Option<Vec<u8>> = if bytes >= 0 {
+        Some(vec![0u8; bytes as usize])
     } else {
-        args
+        None
     };
 
-    let mut exit_code: u8 = 0;
-    let multiple = files.len() > 1 && !flag_q;
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
 
-    for (i, file) in files.iter().enumerate() {
+    if ctx.optargs.is_empty() {
         if multiple {
-            if i > 0 {
-                println!();
-            }
-            println!("==> {} <==", file);
-        } else if flag_v && file != "-" {
-            println!("==> {} <==", file);
+            writeln!(writer, "==> - <==").ok();
+        } else if flag_v {
+            writeln!(writer, "==> - <==").ok();
         }
-
-        if let Err(e) = head_file(file, lines, bytes) {
+        if let Err(e) = head_file("-", lines, bytes, &mut byte_buf, &mut writer) {
             eprintln!("head: {e}");
             exit_code = 1;
         }
+    } else {
+        for (i, file) in ctx.optargs.iter().enumerate() {
+            if multiple {
+                if i > 0 {
+                    writeln!(writer).ok();
+                }
+                writeln!(writer, "==> {} <==", file).ok();
+            } else if flag_v && file != "-" {
+                writeln!(writer, "==> {} <==", file).ok();
+            }
+
+            if let Err(e) = head_file(file, lines, bytes, &mut byte_buf, &mut writer) {
+                eprintln!("head: {e}");
+                exit_code = 1;
+            }
+        }
     }
 
+    writer.flush().ok();
     exit_code
 }
 
 /// Read the head of a single file (or stdin when `file == "-"`) and write
 /// the requested number of lines or bytes to stdout.
-fn head_file(file: &str, lines: usize, bytes: i64) -> Result<(), String> {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-
-    // Byte-count mode: read exactly `bytes` bytes, then stop.
+///
+/// `byte_buf` is `Some(buf)` in byte-count mode and reused across calls;
+/// `None` in line-count mode.
+fn head_file(
+    file: &str,
+    lines: usize,
+    bytes: i64,
+    byte_buf: &mut Option<Vec<u8>>,
+    writer: &mut impl Write,
+) -> Result<(), String> {
+    // Byte-count mode: read up to `bytes` bytes, then stop.
     if bytes >= 0 {
-        let mut buf = vec![0u8; bytes as usize];
+        let buf = byte_buf.as_mut().unwrap();
         let n = if file == "-" {
             let mut stdin = std::io::stdin();
-            stdin.read(&mut buf).map_err(|e| e.to_string())?
+            stdin.read(buf).map_err(|e| e.to_string())?
         } else {
             let mut f = File::open(file).map_err(|e| format!("'{file}': {e}"))?;
-            f.read(&mut buf).map_err(|e| format!("'{file}': {e}"))?
+            f.read(buf).map_err(|e| format!("'{file}': {e}"))?
         };
-        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        writer.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         return Ok(());
     }
 
     // Line-count mode: read up to `lines` lines.
-    if file == "-" {
-        let stdin = std::io::stdin();
-        let reader = stdin.lock();
-        for (i, line) in reader.lines().enumerate() {
-            if i >= lines {
-                break;
-            }
-            let line = line.map_err(|e| e.to_string())?;
-            writeln!(out, "{}", line).map_err(|e| e.to_string())?;
-        }
+    let mut reader: Box<dyn BufRead> = if file == "-" {
+        Box::new(std::io::stdin().lock())
     } else {
         let f = File::open(file).map_err(|e| format!("'{file}': {e}"))?;
-        let reader = BufReader::new(f);
-        for (i, line) in reader.lines().enumerate() {
-            if i >= lines {
-                break;
-            }
-            let line = line.map_err(|e| e.to_string())?;
-            writeln!(out, "{}", line).map_err(|e| e.to_string())?;
+        Box::new(BufReader::new(f))
+    };
+
+    for _ in 0..lines {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
         }
+        writer
+            .write_all(line.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(())

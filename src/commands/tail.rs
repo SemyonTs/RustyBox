@@ -20,8 +20,9 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
+use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::thread;
 use std::time::Duration;
 
@@ -43,32 +44,41 @@ fn tail_main(ctx: &mut Context) -> u8 {
     let flag_q = opts.count('q') > 0;
     let flag_v = opts.count('v') > 0;
 
-    let args: Vec<String> = ctx.optargs.clone();
-    let files: Vec<String> = if args.is_empty() {
-        vec!["-".to_string()]
-    } else {
-        args
-    };
-
     let mut exit_code: u8 = 0;
-    let multiple = files.len() > 1 && !flag_q;
+    let multiple = ctx.optargs.len() > 1 && !flag_q;
 
-    for (i, file) in files.iter().enumerate() {
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+
+    if ctx.optargs.is_empty() {
         if multiple {
-            if i > 0 {
-                println!();
-            }
-            println!("==> {} <==", file);
-        } else if flag_v && file != "-" {
-            println!("==> {} <==", file);
+            writeln!(writer, "==> - <==").ok();
+        } else if flag_v {
+            writeln!(writer, "==> - <==").ok();
         }
-
-        if let Err(e) = tail_file(file, lines, bytes, flag_f) {
+        if let Err(e) = tail_file("-", lines, bytes, flag_f, &mut writer) {
             eprintln!("tail: {e}");
             exit_code = 1;
         }
+    } else {
+        for (i, file) in ctx.optargs.iter().enumerate() {
+            if multiple {
+                if i > 0 {
+                    writeln!(writer).ok();
+                }
+                writeln!(writer, "==> {} <==", file).ok();
+            } else if flag_v && file != "-" {
+                writeln!(writer, "==> {} <==", file).ok();
+            }
+
+            if let Err(e) = tail_file(file, lines, bytes, flag_f, &mut writer) {
+                eprintln!("tail: {e}");
+                exit_code = 1;
+            }
+        }
     }
 
+    writer.flush().ok();
     exit_code
 }
 
@@ -76,66 +86,134 @@ fn tail_main(ctx: &mut Context) -> u8 {
 ///
 /// When `-f` is active the function blocks and continues to read appended
 /// data indefinitely.
-fn tail_file(file: &str, lines: i64, bytes: i64, flag_f: bool) -> Result<(), String> {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-
-    // Stdin path: read all lines into memory, then emit the tail.
+fn tail_file(
+    file: &str,
+    lines: i64,
+    bytes: i64,
+    flag_f: bool,
+    writer: &mut BufWriter<std::io::StdoutLock>,
+) -> Result<(), String> {
+    // Stdin path: use a ring buffer to keep only the last N lines in memory.
     if file == "-" {
         let stdin = std::io::stdin();
-        let reader = stdin.lock();
-        let all: Vec<String> = reader.lines().map(|l| l.unwrap_or_default()).collect();
+        let mut reader = stdin.lock();
 
-        let start = if lines >= 0 {
-            all.len().saturating_sub(lines as usize)
+        if bytes >= 0 {
+            // Byte-count from stdin: read all, keep only the tail.
+            let mut buf = Vec::new();
+            reader
+                .take(bytes as u64)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
+            writer.write_all(&buf).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+
+        // Line-count from stdin: ring buffer with only `lines` entries.
+        let cap = if lines >= 0 {
+            lines as usize
         } else {
-            // +N: start at line N (1-based).
-            (lines.unsigned_abs() as usize).saturating_sub(1)
+            usize::MAX // +N: keep everything from line N onward.
         };
+        let mut ring = VecDeque::with_capacity(if cap < 1024 { cap } else { 1024 });
+        let mut line_num: i64 = 0;
 
-        for line in &all[start..] {
-            writeln!(out, "{}", line).map_err(|e| e.to_string())?;
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            let n = reader.read_line(&mut line_buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            line_num += 1;
+
+            if lines >= 0 {
+                // -n N: keep last N lines.
+                if ring.len() == cap {
+                    ring.pop_front();
+                }
+                // Store without trailing newline.
+                let stored = if line_buf.ends_with('\n') {
+                    line_buf[..line_buf.len() - 1].to_string()
+                } else {
+                    line_buf.clone()
+                };
+                ring.push_back(stored);
+            } else {
+                // +N: skip first N-1 lines, output the rest.
+                if line_num >= lines {
+                    writer
+                        .write_all(line_buf.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+
+        if lines >= 0 {
+            for line in &ring {
+                writeln!(writer, "{}", line).map_err(|e| e.to_string())?;
+            }
         }
         return Ok(());
     }
 
+    // File path.
     let mut f = File::open(file).map_err(|e| format!("'{}': {}", file, e))?;
 
     // Byte-count mode: seek backwards and read the remainder.
     if bytes >= 0 {
         let meta = f.metadata().map_err(|e| e.to_string())?;
         let size = meta.len() as i64;
-        let start = size - bytes;
+        let start = (size - bytes).max(0);
         if start > 0 {
             f.seek(SeekFrom::Start(start as u64))
                 .map_err(|e| e.to_string())?;
         }
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-        out.write_all(&buf).map_err(|e| e.to_string())?;
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
 
         if flag_f {
-            follow(file, &mut out)?;
+            follow(file, writer)?;
         }
         return Ok(());
     }
 
-    // Line-count mode: read all lines, then emit the tail.
-    let reader = BufReader::new(f);
-    let all: Vec<String> = reader.lines().map(|l| l.unwrap_or_default()).collect();
-
-    let start = if lines >= 0 {
-        all.len().saturating_sub(lines as usize)
+    // Line-count mode for files: ring buffer approach.
+    let cap = if lines >= 0 {
+        lines as usize
     } else {
-        (lines.unsigned_abs() as usize).saturating_sub(1)
+        usize::MAX
     };
+    let mut ring = VecDeque::with_capacity(if cap < 1024 { cap } else { 1024 });
+    let mut line_num: i64 = 0;
 
-    for line in &all[start..] {
-        writeln!(out, "{}", line).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(f);
+    let _line_buf = String::new();
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|e| e.to_string())?;
+        line_num += 1;
+
+        if lines >= 0 {
+            if ring.len() == cap {
+                ring.pop_front();
+            }
+            ring.push_back(line);
+        } else {
+            if line_num >= lines {
+                writeln!(writer, "{}", line).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    if lines >= 0 {
+        for line in &ring {
+            writeln!(writer, "{}", line).map_err(|e| e.to_string())?;
+        }
     }
 
     if flag_f {
-        follow(file, &mut out)?;
+        follow(file, writer)?;
     }
 
     Ok(())
@@ -153,7 +231,7 @@ fn follow(file: &str, out: &mut impl Write) -> Result<(), String> {
         let n = f.read(&mut buf).map_err(|e| e.to_string())?;
         if n > 0 {
             out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            out.flush().ok();
+            out.flush().map_err(|e| e.to_string())?;
         }
         thread::sleep(Duration::from_millis(500));
     }

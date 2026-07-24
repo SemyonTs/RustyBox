@@ -38,20 +38,24 @@ fn du_main(ctx: &mut Context) -> u8 {
     let flag_a = opts.count('a') > 0;
     let depth = opts.get_int('d').unwrap_or(-1);
 
-    let args: Vec<String> = ctx.optargs.clone();
-    let dirs: Vec<String> = if args.is_empty() {
-        vec![".".to_string()]
-    } else {
-        args
-    };
-
     let mut exit_code: u8 = 0;
-    for dir in &dirs {
-        match du_dir(dir, flag_h, flag_s, flag_a, depth, 0, &mut exit_code) {
-            Ok(_) => {}
+
+    if ctx.optargs.is_empty() {
+        match du_dir(".", flag_h, flag_s, flag_a, depth, 0, &mut exit_code) {
             Err(e) => {
                 eprintln!("du: {e}");
                 exit_code = 1;
+            }
+            _ => {}
+        }
+    } else {
+        for dir in &ctx.optargs {
+            match du_dir(dir, flag_h, flag_s, flag_a, depth, 0, &mut exit_code) {
+                Err(e) => {
+                    eprintln!("du: {e}");
+                    exit_code = 1;
+                }
+                _ => {}
             }
         }
     }
@@ -92,12 +96,20 @@ fn du_dir(
     if !flag_s && (max_depth < 0 || cur_depth < max_depth) {
         let rd = fs::read_dir(dir).map_err(|e| format!("'{dir}': {e}"))?;
         for item in rd {
-            let entry = item.map_err(|e| e.to_string())?;
+            let entry = match item {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("du: {dir}: {e}");
+                    *exit_code = 1;
+                    continue;
+                }
+            };
             let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry.file_name();
+            let name_str = name.to_str().unwrap_or_default();
 
             // Skip the self-referential directory entries.
-            if name == "." || name == ".." {
+            if name_str == "." || name_str == ".." {
                 continue;
             }
 
@@ -112,9 +124,10 @@ fn du_dir(
                 continue;
             }
 
-            let sub = path.to_string_lossy().into_owned();
+            // Use to_str() to borrow the path as &str when possible.
+            let sub = path.to_str().unwrap_or_default();
             match du_dir(
-                &sub,
+                sub,
                 flag_h,
                 flag_s,
                 flag_a,
