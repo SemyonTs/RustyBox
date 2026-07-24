@@ -37,6 +37,7 @@ macro_rules! register_command {
 
 mod basename;
 mod cat;
+mod cd;
 mod chmod;
 mod cp;
 mod cut;
