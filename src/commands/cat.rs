@@ -35,10 +35,10 @@ fn cat_main(ctx: &mut Context) -> u8 {
         }
     };
 
-    let flag_u = opts.count('u') > 0;
-    let flag_v = opts.count('v') > 0;
     let flag_t = opts.count('t') > 0;
     let flag_e = opts.count('e') > 0;
+    let flag_v = opts.count('v') > 0 || flag_t || flag_e;
+    let flag_u = opts.count('u') > 0;
 
     let fast_path = !flag_u && !flag_v && !flag_t && !flag_e;
 
