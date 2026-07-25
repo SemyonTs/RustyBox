@@ -62,3 +62,177 @@ fn tail_from_line() {
         .success()
         .stdout(predicate::eq("line3\nline4\nline5\n"));
 }
+
+// -v: always print header (single file)
+#[test]
+fn tail_verbose_single() {
+    let (_dir, path) = temp_file_with("line1\nline2\n");
+    rb(&["tail", "-v", "-n", "1", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq(format!(
+            "==> {} <==\nline2\n",
+            path.to_str().unwrap()
+        )));
+}
+
+// -v with multiple files
+#[test]
+fn tail_verbose_multiple() {
+    let (_dir1, path1) = temp_file_with("a\n");
+    let (_dir2, path2) = temp_file_with("b\n");
+    rb(&[
+        "tail",
+        "-v",
+        "-n",
+        "1",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::function(|out: &str| {
+        out.contains("==> ")
+            && out.contains(path1.to_str().unwrap())
+            && out.contains("a")
+            && out.contains(path2.to_str().unwrap())
+            && out.contains("b")
+    }));
+}
+
+// -q with multiple files (suppress headers)
+#[test]
+fn tail_quiet_multiple() {
+    let (_dir1, path1) = temp_file_with("a\n");
+    let (_dir2, path2) = temp_file_with("b\n");
+    rb(&[
+        "tail",
+        "-q",
+        "-n",
+        "1",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::eq("a\nb\n"));
+}
+
+// -c 0 -> empty output
+#[test]
+fn tail_bytes_zero() {
+    let (_dir, path) = temp_file_with("hello\n");
+    rb(&["tail", "-c", "0", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq(""));
+}
+
+// -n 0 -> empty output
+#[test]
+fn tail_lines_zero() {
+    let (_dir, path) = temp_file_with("hello\n");
+    rb(&["tail", "-n", "0", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq(""));
+}
+
+// -c larger than file size -> entire file
+#[test]
+fn tail_bytes_larger_than_file() {
+    let (_dir, path) = temp_file_with("abc\n");
+    rb(&["tail", "-c", "10", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("abc\n"));
+}
+
+// -n +N with different values
+#[test]
+fn tail_from_line_plus_various() {
+    let content = "line1\nline2\nline3\nline4\nline5\n";
+    let (_dir, path) = temp_file_with(content);
+    rb(&["tail", "-n", "+4", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("line4\nline5\n"));
+}
+
+// Multiple files without -q or -v: headers shown by default
+#[test]
+fn tail_multiple_files_default_headers() {
+    let (_dir1, path1) = temp_file_with("a\n");
+    let (_dir2, path2) = temp_file_with("b\n");
+    rb(&[
+        "tail",
+        "-n",
+        "1",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::function(|out: &str| {
+        out.contains("==> ")
+            && out.contains(path1.to_str().unwrap())
+            && out.contains("a")
+            && out.contains(path2.to_str().unwrap())
+            && out.contains("b")
+    }));
+}
+
+// Non‑existent file
+#[test]
+fn tail_nonexistent_file() {
+    rb(&["tail", "/nonexistent"]).assert().failure().code(1);
+}
+
+// -f (follow) – test by appending to a file after tail starts
+#[test]
+fn tail_follow() {
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("follow.txt");
+    std::fs::write(&file_path, "initial\n").unwrap();
+
+    // Spawn `tail -f` as a proper background process using std::process::Command
+    let mut child = std::process::Command::new(
+        std::env::current_exe()
+            .expect("failed to get current exe path")
+            .to_str()
+            .expect("exe path is not valid UTF-8"),
+    )
+    .arg("tail")
+    .arg("-f")
+    .arg(file_path.to_str().unwrap())
+    .stdout(Stdio::piped())
+    .spawn()
+    .expect("failed to spawn tail -f");
+
+    // Give tail time to open the file and read the initial content
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Append a line
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file_path)
+        .unwrap();
+    writeln!(file, "appended").unwrap();
+    file.flush().unwrap();
+
+    // Wait for tail to notice the change
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Kill the child and collect output
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The output should contain the initial line and the appended line.
+    // (tail -f also outputs the last 10 lines at start, so "initial" is printed.)
+    assert!(stdout.contains("initial") && stdout.contains("appended"));
+}

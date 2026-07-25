@@ -60,18 +60,21 @@ fn cat_binary_data(#[case] data: &[u8]) {
         .write_stdin(data)
         .assert()
         .success()
-        .stdout(predicate::eq(data));
+        .stdout(predicate::eq(data.to_vec()));
 }
 
+// Test -e: visualize line endings with '$' (also implies -v)
 #[test]
 fn cat_visualize_newlines() {
+    // -e implies -v, so newline is shown as '$' and other chars are visualized
     rb(&["cat", "-e"])
         .write_stdin("hello\n")
         .assert()
         .success()
-        .stdout(predicate::eq("$\n"));
+        .stdout(predicate::eq("hello$\n"));
 }
 
+// Test -t: visualize tabs as ^I (also implies -v)
 #[test]
 fn cat_visualize_tabs() {
     rb(&["cat", "-t"])
@@ -79,4 +82,70 @@ fn cat_visualize_tabs() {
         .assert()
         .success()
         .stdout(predicate::eq("^Iindented\n"));
+}
+
+// Test -v: visualize non-printing characters (except tab and newline)
+#[test]
+fn cat_visualize_nonprinting() {
+    let data = b"\x01\x02\x7f\n";
+    rb(&["cat", "-v"])
+        .write_stdin(data)
+        .assert()
+        .success()
+        .stdout(predicate::eq(b"^A^B^?\n".to_vec()));
+}
+
+// Test -t combined with -v (implied) – tabs become ^I, others also visualized
+#[test]
+fn cat_visualize_tabs_and_nonprinting() {
+    let data = b"\t\x01\n";
+    rb(&["cat", "-t"])
+        .write_stdin(data)
+        .assert()
+        .success()
+        // -t implies -v, so tabs become ^I and \x01 becomes ^A
+        .stdout(predicate::eq(b"^I^A\n".to_vec()));
+}
+
+// Test -v -t -e together
+#[test]
+fn cat_visualize_all() {
+    let data = b"\t\x01\n";
+    rb(&["cat", "-vte"])
+        .write_stdin(data)
+        .assert()
+        .success()
+        // -v -t -e: tabs -> ^I, \x01 -> ^A, newline -> $\n
+        .stdout(predicate::eq(b"^I^A$\n".to_vec()));
+}
+
+// Test -u (unbuffered) with text
+#[test]
+fn cat_unbuffered() {
+    rb(&["cat", "-u"])
+        .write_stdin("hello\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("hello\n"));
+}
+
+// Test -u with binary data
+#[test]
+fn cat_unbuffered_binary() {
+    let data = b"binary\x00\x01\n";
+    rb(&["cat", "-u"])
+        .write_stdin(data)
+        .assert()
+        .success()
+        .stdout(predicate::eq(data.to_vec()));
+}
+
+// Test "-" with options
+#[test]
+fn cat_stdin_dash_with_options() {
+    rb(&["cat", "-v", "-"])
+        .write_stdin("\x01\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq(b"^A\n".to_vec()));
 }

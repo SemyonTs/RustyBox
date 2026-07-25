@@ -55,3 +55,54 @@ fn wc_stdin() {
         .success()
         .stdout(predicate::eq("      4 \n"));
 }
+
+// -m: character count (multibyte aware)
+#[test]
+fn wc_characters() {
+    let (_dir, path) = temp_file_with("hello\nworld\n");
+    // "hello\nworld\n" has 12 characters (including two newlines)
+    rb(&["wc", "-m", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("     12 \n"));
+}
+
+// Multiple files: total line at the end
+#[test]
+fn wc_multiple_files_total() {
+    let (_dir1, path1) = temp_file_with("a\nb\n");
+    let (_dir2, path2) = temp_file_with("c\nd\ne\n");
+    rb(&["wc", path1.to_str().unwrap(), path2.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let lines: Vec<&str> = out.lines().collect();
+            lines.len() == 3 && lines[2].contains("total")
+        }));
+}
+
+// Combination of options (-l and -w)
+#[test]
+fn wc_combination_options() {
+    let (_dir, path) = temp_file_with("one two\nthree four\n");
+    rb(&["wc", "-l", "-w", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("      2       4 \n"));
+}
+
+// Non‑existent file
+#[test]
+fn wc_nonexistent_file() {
+    rb(&["wc", "/nonexistent"]).assert().failure().code(1);
+}
+
+// Empty file
+#[test]
+fn wc_empty_file() {
+    let (_dir, path) = temp_file_with("");
+    rb(&["wc", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("      0       0       0 \n"));
+}
