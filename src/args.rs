@@ -31,20 +31,28 @@ use std::collections::HashMap;
 /// Result of option parsing, made available to command implementations.
 #[derive(Default)]
 pub struct ParsedOpts {
-    /// String values keyed by option character.
+    /// String values keyed by option character (last occurrence wins).
     pub strings: HashMap<char, String>,
+    /// All string values for options that appear multiple times.
+    pub multi_strings: HashMap<char, Vec<String>>,
     /// Integer values keyed by option character.
     pub ints: HashMap<char, i64>,
-    /// Occurrence counters keyed by option character.  For plain flags the
-    /// value is 1 when the flag is set; for repeatable options it reflects
-    /// the exact number of occurrences.
+    /// Occurrence counters keyed by option character.
     pub counts: HashMap<char, u32>,
 }
 
 impl ParsedOpts {
-    /// Return the string argument associated with option `c`, if any.
+    /// Return the last string argument associated with option `c`.
     pub fn get_str(&self, c: char) -> Option<&str> {
         self.strings.get(&c).map(|s| s.as_str())
+    }
+
+    /// Return all string arguments associated with option `c`.
+    pub fn get_strs(&self, c: char) -> &[String] {
+        self.multi_strings
+            .get(&c)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Return the integer argument associated with option `c`, if any.
@@ -101,7 +109,16 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
                 stop_at_first_nonopt = true;
                 i += 1;
             }
-            b'(' => break,
+            // Skip grouping/mutual-exclusion syntax (square brackets and parentheses
+            // with letters).  They are accepted but not enforced.
+            b'[' | b'(' => {
+                while i < bytes.len() && bytes[i] != b']' && bytes[i] != b')' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1; // skip closing bracket/paren
+                }
+            }
             c if c.is_ascii_alphanumeric() => break,
             _ => i += 1,
         }
@@ -282,6 +299,7 @@ pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
 }
 
 /// Store an option argument value in the appropriate map inside `ParsedOpts`.
+/// Supports repeated options by accumulating into `multi_strings`.
 fn store_arg(parsed: &mut ParsedOpts, spec: &OptSpec, val: String) -> Result<(), String> {
     if spec.is_int {
         let n: i64 = val
@@ -289,14 +307,19 @@ fn store_arg(parsed: &mut ParsedOpts, spec: &OptSpec, val: String) -> Result<(),
             .map_err(|_| format!("expected a number, got '{}'", val))?;
         parsed.ints.insert(spec.ch, n);
     } else {
-        parsed.strings.insert(spec.ch, val);
+        // Always update the last value in `strings`.
+        parsed.strings.insert(spec.ch, val.clone());
+        // Append to the list of all values for this option.
+        parsed
+            .multi_strings
+            .entry(spec.ch)
+            .or_insert_with(Vec::new)
+            .push(val);
     }
     Ok(())
 }
 
 /// Read a decimal number from the option string starting at `start`.
-///
-/// Returns the parsed value and the index of the first byte after the number.
 fn read_num(s: &str, start: usize) -> Result<(i64, usize), String> {
     let rest = &s[start..];
     let end = rest

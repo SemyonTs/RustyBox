@@ -40,7 +40,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 ///   1 — no matches were found.
 ///   2 — an error occurred (syntax error in the pattern, etc.).
 fn grep_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "EFivnrc(lq)wxe:f:") {
+    let opts = match crate::args::parse(ctx, "EFivnrclqwxe:f:hH") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("grep: {e}");
@@ -91,10 +91,10 @@ fn grep_main(ctx: &mut Context) -> u8 {
         re.map_err(|e| format!("invalid regular expression '{}': {}", raw, e))
     };
 
-    // Collect patterns from -e options (references borrowed from opts).
-    if let Some(e) = opts.get_str('e') {
-        if !e.is_empty() {
-            match compile_pattern(e) {
+    // Collect patterns from repeated -e options.
+    for pat in opts.get_strs('e') {
+        if !pat.is_empty() {
+            match compile_pattern(pat) {
                 Ok(re) => regexes.push(re),
                 Err(msg) => {
                     eprintln!("grep: {msg}");
@@ -160,6 +160,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     let multiple = files.len() > 1 || flag_r;
     let mut found_any = false;
+    let mut has_error = false;
 
     // Use a buffered stdout lock for all output.
     let stdout = std::io::stdout();
@@ -182,12 +183,14 @@ fn grep_main(ctx: &mut Context) -> u8 {
                 multiple,
                 &mut writer,
                 &mut found_any,
+                &mut has_error,
             );
             match result {
                 Err(e) => {
                     if !flag_q {
                         eprintln!("grep: {e}");
                     }
+                    has_error = true;
                 }
                 Ok(early_exit) => {
                     if early_exit {
@@ -219,6 +222,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
                     if !flag_q {
                         eprintln!("grep: {e}");
                     }
+                    has_error = true;
                 }
             }
 
@@ -230,6 +234,10 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     // Flush writer (important!)
     writer.flush().ok();
+
+    if has_error {
+        return 2;
+    }
 
     if flag_q {
         return if found_any { 0 } else { 1 };
@@ -254,6 +262,7 @@ fn grep_recursive(
     multiple: bool,
     writer: &mut BufWriter<std::io::StdoutLock>,
     found_any: &mut bool,
+    has_error: &mut bool,
 ) -> Result<bool, String> {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
@@ -276,7 +285,7 @@ fn grep_recursive(
             let sub_path = path.to_str().unwrap_or_default();
             let early = grep_recursive(
                 sub_path, regexes, flag_v, flag_n, flag_c, flag_l, flag_q, flag_h, flag_H,
-                multiple, writer, found_any,
+                multiple, writer, found_any, has_error,
             )?;
             if early {
                 return Ok(true);
@@ -296,6 +305,7 @@ fn grep_recursive(
                     if !flag_q {
                         eprintln!("grep: {e}");
                     }
+                    *has_error = true;
                 }
             }
 
@@ -407,7 +417,7 @@ fn grep_file(
 register_command!(
     GREP_CMD,
     "grep",
-    "EFivnrc(lq)wxe:f:",
+    "EFivnrclqwxe:f:hH",
     CommandFlags::BIN.bits(),
     grep_main
 );
