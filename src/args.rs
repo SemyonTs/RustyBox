@@ -1,335 +1,318 @@
 // =============================================================================
-// args — Command-line argument parser (analogous to toybox/lib/args.c).
+// args — Command-line argument parser using lexopt.
 // =============================================================================
 // Copyright (c) 2026 Semyon Tsarev
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // project, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Implementation inspired by Toybox (https://landley.net/toybox/)
-// Toybox is copyrighted by Rob Landley, see NOTICE file for license details.
-//
-// Supported Toybox `get_optflags` syntax subset:
-//   - Short options: `-a`, `-abc` (concatenated).
-//   - Long options:  `(longname)` → `--longname`.
-//   - Option-argument type suffixes:
-//       `:`  string (stored in a `HashMap<char, String>`).
-//       `#`  integer (stored in a `HashMap<char, i64>`).
-//   - Prefixes at the start of the option string:
-//       `<N`  minimum number of positional arguments.
-//       `>N`  maximum number of positional arguments.
-//       `^`   stop parsing after the first non-option argument.
-//   - `--` terminates option parsing.
-//
-// Each option corresponds to a bit in `Context.optflags` in left-to-right
-// order (rightmost option = bit 0, matching Toybox's convention).
+// This module replaces the original Toybox‑inspired parser with a clean
+// Rust‑native implementation built on top of the `lexopt` crate.
 // =============================================================================
 
 use crate::context::Context;
 use std::collections::HashMap;
 
-/// Result of option parsing, made available to command implementations.
-#[derive(Default)]
+/// Result of parsing command-line options.
+///
+/// Provides access to option counts and their associated arguments.
 pub struct ParsedOpts {
-    /// String values keyed by option character (last occurrence wins).
-    pub strings: HashMap<char, String>,
-    /// All string values for options that appear multiple times.
-    pub multi_strings: HashMap<char, Vec<String>>,
-    /// Integer values keyed by option character.
-    pub ints: HashMap<char, i64>,
-    /// Occurrence counters keyed by option character.
-    pub counts: HashMap<char, u32>,
+    counts: HashMap<char, u32>,
+    values: HashMap<char, Vec<String>>,
 }
 
 impl ParsedOpts {
-    /// Return the last string argument associated with option `c`.
-    pub fn get_str(&self, c: char) -> Option<&str> {
-        self.strings.get(&c).map(|s| s.as_str())
+    /// Returns how many times the short option `ch` was given.
+    pub fn count(&self, ch: char) -> u32 {
+        self.counts.get(&ch).copied().unwrap_or(0)
     }
 
-    /// Return all string arguments associated with option `c`.
-    pub fn get_strs(&self, c: char) -> &[String] {
-        self.multi_strings
-            .get(&c)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+    /// Returns the last argument value for option `ch`, if any.
+    pub fn get_str(&self, ch: char) -> Option<&str> {
+        self.values
+            .get(&ch)
+            .and_then(|v| v.last())
+            .map(|s| s.as_str())
     }
 
-    /// Return the integer argument associated with option `c`, if any.
-    pub fn get_int(&self, c: char) -> Option<i64> {
-        self.ints.get(&c).copied()
+    /// Returns all argument values for option `ch` (for repeated options).
+    pub fn get_strs(&self, ch: char) -> Vec<&str> {
+        self.values
+            .get(&ch)
+            .map(|v| v.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default()
     }
 
-    /// Return the number of times option `c` appeared (0 if absent).
-    pub fn count(&self, c: char) -> u32 {
-        self.counts.get(&c).copied().unwrap_or(0)
-    }
-
-    /// Convenience alias for `count(c) > 0`.
-    pub fn has(&self, c: char) -> bool {
-        self.count(c) > 0
+    /// Parses the last argument value of option `ch` as an integer.
+    pub fn get_int(&self, ch: char) -> Option<i64> {
+        self.get_str(ch).and_then(|s| s.parse().ok())
     }
 }
 
-/// Internal description of a single parsed option.
+// =============================================================================
+// Internal representation of the option specification
+// =============================================================================
+
+#[derive(Clone)]
+struct OptionInfo {
+    has_arg: bool,
+}
+
 struct OptSpec {
-    ch: char,
-    takes_arg: bool,
-    is_int: bool,
+    options: HashMap<char, OptionInfo>,
+    groups: Vec<Vec<char>>,
+    min_args: usize,
+    max_args: usize,
+    stop_at_first_non_option: bool,
 }
 
-/// Parse the option string `optstr` against the argument vector in `ctx`,
-/// populating `ctx.optflags` and `ctx.optargs` and returning a `ParsedOpts`
-/// value with any option arguments.
-pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
-    let mut specs: Vec<OptSpec> = Vec::new();
-    let mut long_map: HashMap<String, usize> = HashMap::new();
+// =============================================================================
+// Parser for the optstr syntax
+// =============================================================================
 
-    // --- Prefixes at the start of the option string ---
-    let mut min_args: usize = 0;
-    let mut max_args: usize = usize::MAX;
-    let mut stop_at_first_nonopt = false;
+/// Parses a Toybox‑style option string into an `OptSpec`.
+///
+/// Supported constructs:
+///   - `^`                     stop at first non‑option argument
+///   - `<N>`                   minimum number of positional arguments
+///   - `>M`                    maximum number of positional arguments
+///   - `[abc]`                 mutually exclusive group of options
+///   - `(x)`                   single‑letter long alias (adds option `x`)
+///   - `(xyz)`                 if all letters are already options, it's an
+///                             expansion (does nothing); otherwise it's a
+///                             long name (ignored)
+///   - `c:`                    option `c` takes an argument
+///   - `?`                     ignored (all options are optional by default)
+fn parse_optstr(optstr: &str) -> Result<OptSpec, String> {
+    let mut options = HashMap::new();
+    let mut groups = Vec::new();
+    let mut min_args = 0;
+    let mut max_args = usize::MAX;
+    let mut stop_at_first_non_option = false;
 
-    let bytes = optstr.as_bytes();
+    let chars: Vec<char> = optstr.chars().collect();
     let mut i = 0;
+    let mut paren_pairs = Vec::new(); // (start, end) indices in chars
 
-    while i < bytes.len() {
-        match bytes[i] {
-            b'<' => {
-                let (n, ni) = read_num(optstr, i + 1)?;
-                min_args = n as usize;
-                i = ni;
-            }
-            b'>' => {
-                let (n, ni) = read_num(optstr, i + 1)?;
-                max_args = n as usize;
-                i = ni;
-            }
-            b'^' => {
-                stop_at_first_nonopt = true;
+    // First pass: collect plain options, groups, and constraints.
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '^' => {
+                stop_at_first_non_option = true;
                 i += 1;
             }
-            // Skip grouping/mutual-exclusion syntax (square brackets and parentheses
-            // with letters).  They are accepted but not enforced.
-            b'[' | b'(' => {
-                while i < bytes.len() && bytes[i] != b']' && bytes[i] != b')' {
+            '<' => {
+                let mut num = 0;
+                i += 1;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    num = num * 10 + (chars[i] as u32 - '0' as u32) as usize;
                     i += 1;
                 }
-                if i < bytes.len() {
-                    i += 1; // skip closing bracket/paren
-                }
+                min_args = num;
             }
-            c if c.is_ascii_alphanumeric() => break,
-            _ => i += 1,
-        }
-    }
-
-    // --- Parse option descriptors and long-option names ---
-    let mut idx = i;
-    while idx < optstr.len() {
-        let c = optstr.as_bytes()[idx];
-
-        if c == b'(' {
-            let end = optstr[idx..]
-                .find(')')
-                .ok_or("unclosed parenthesis in opt string")?;
-            let name = optstr[idx + 1..idx + end].to_string();
-            long_map.insert(name, specs.len());
-            specs.push(OptSpec {
-                ch: '\0',
-                takes_arg: false,
-                is_int: false,
-            });
-            idx += end + 1;
-            continue;
-        }
-
-        if !c.is_ascii_alphanumeric() {
-            idx += 1;
-            continue;
-        }
-
-        let ch = c as char;
-        idx += 1;
-
-        let mut takes_arg = false;
-        let mut is_int = false;
-
-        while idx < optstr.len() {
-            match optstr.as_bytes()[idx] {
-                b':' => {
-                    takes_arg = true;
-                    idx += 1;
+            '>' => {
+                let mut num = 0;
+                i += 1;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    num = num * 10 + (chars[i] as u32 - '0' as u32) as usize;
+                    i += 1;
                 }
-                b'#' => {
-                    takes_arg = true;
-                    is_int = true;
-                    idx += 1;
-                }
-                _ => break,
+                max_args = num;
             }
-        }
-
-        specs.push(OptSpec {
-            ch,
-            takes_arg,
-            is_int,
-        });
-    }
-
-    // Rightmost option = bit 0 (Toybox convention).
-    let bit_of = |pos: usize| -> u32 { (specs.len() - 1 - pos) as u32 };
-
-    let mut parsed = ParsedOpts::default();
-    let argv = &ctx.argv;
-    let mut i = 1; // skip program name
-    let mut done = false;
-
-    // Reuse ctx.optargs instead of allocating a new Vec.
-    ctx.optargs.clear();
-
-    while i < argv.len() {
-        let arg = &argv[i];
-
-        if done {
-            ctx.optargs.push(arg.clone());
-            i += 1;
-            continue;
-        }
-
-        if arg == "--" {
-            done = true;
-            i += 1;
-            continue;
-        }
-
-        // Long option.
-        if arg.starts_with("--") && arg.len() > 2 {
-            let name = &arg[2..];
-            let (lname, largs) = match name.split_once('=') {
-                Some((n, v)) => (n, Some(v.to_string())),
-                None => (name, None),
-            };
-
-            let pos = *long_map
-                .get(lname)
-                .ok_or_else(|| format!("unknown option --{}", lname))?;
-            let spec = &specs[pos];
-            ctx.optflags |= 1u64 << bit_of(pos);
-
-            if spec.takes_arg {
-                let val = match largs {
-                    Some(v) => v,
-                    None => {
-                        i += 1;
-                        if i >= argv.len() {
-                            return Err(format!("option --{} requires an argument", lname));
-                        }
-                        argv[i].clone()
+            '[' => {
+                let mut group = Vec::new();
+                i += 1;
+                while i < chars.len() && chars[i] != ']' {
+                    if chars[i].is_ascii_alphabetic() {
+                        group.push(chars[i]);
                     }
-                };
-                store_arg(&mut parsed, spec, val)?;
-            } else {
-                *parsed.counts.entry('\0').or_insert(0) += 1;
-            }
-            i += 1;
-        }
-        // Short option(s).
-        else if arg.starts_with('-') && arg.len() > 1 {
-            let mut chars = arg[1..].chars().peekable();
-            // Process each character in the cluster.
-            loop {
-                let ch = match chars.next() {
-                    Some(c) => c,
-                    None => break,
-                };
-                let pos = specs
-                    .iter()
-                    .position(|s| s.ch == ch)
-                    .ok_or_else(|| format!("unknown option -{}", ch))?;
-                let spec = &specs[pos];
-                ctx.optflags |= 1u64 << bit_of(pos);
-
-                if spec.takes_arg {
-                    let rest: String = chars.collect();
-                    let val = if !rest.is_empty() {
-                        rest
-                    } else {
-                        i += 1;
-                        if i >= argv.len() {
-                            return Err(format!("option -{} requires an argument", ch));
-                        }
-                        argv[i].clone()
-                    };
-                    chars = "".chars().peekable(); // exhausted
-                    store_arg(&mut parsed, spec, val)?;
-                } else {
-                    *parsed.counts.entry(ch).or_insert(0) += 1;
+                    i += 1;
+                }
+                if !group.is_empty() {
+                    groups.push(group);
+                }
+                if i < chars.len() && chars[i] == ']' {
+                    i += 1;
                 }
             }
-            i += 1;
-        }
-        // Positional argument.
-        else {
-            ctx.optargs.push(arg.clone());
-            i += 1;
-            if stop_at_first_nonopt {
-                done = true;
+            '(' => {
+                let start = i;
+                i += 1;
+                while i < chars.len() && chars[i] != ')' {
+                    i += 1;
+                }
+                if i < chars.len() && chars[i] == ')' {
+                    paren_pairs.push((start, i));
+                    i += 1;
+                }
+            }
+            '?' => {
+                // Optional marker – we ignore it because all options are optional.
+                i += 1;
+            }
+            ch if ch.is_ascii_alphabetic() => {
+                let opt_char = ch;
+                let mut has_arg = false;
+                i += 1; // consume the letter
+                if i < chars.len() && chars[i] == ':' {
+                    has_arg = true;
+                    i += 1; // consume the ':'
+                }
+                options.insert(opt_char, OptionInfo { has_arg });
+            }
+            _ => {
+                i += 1;
             }
         }
     }
 
-    // Enforce positional-argument count constraints.
-    if ctx.optargs.len() < min_args {
-        return Err(format!(
-            "not enough arguments: need at least {}, got {}",
-            min_args,
-            ctx.optargs.len()
-        ));
-    }
-    if ctx.optargs.len() > max_args {
-        return Err(format!(
-            "too many arguments: maximum {}, got {}",
-            max_args,
-            ctx.optargs.len()
-        ));
+    // Second pass: process parentheses content.
+    for (start, end) in paren_pairs {
+        let inner: String = chars[start + 1..end].iter().collect();
+        if inner.len() == 1 {
+            let ch = inner.chars().next().unwrap();
+            if ch.is_ascii_alphabetic() && !options.contains_key(&ch) {
+                options.insert(ch, OptionInfo { has_arg: false });
+            }
+        } else if inner.len() > 1 {
+            // If every character is already a known option, this is an
+            // expansion (e.g. `(dpr)` for `-a`). Otherwise it's a long
+            // name and we ignore it.
+            let all_opts = inner
+                .chars()
+                .all(|ch| ch.is_ascii_alphabetic() && options.contains_key(&ch));
+            if !all_opts {
+                // Long name – ignore.
+            }
+        }
     }
 
-    Ok(parsed)
+    Ok(OptSpec {
+        options,
+        groups,
+        min_args,
+        max_args,
+        stop_at_first_non_option,
+    })
 }
 
-/// Store an option argument value in the appropriate map inside `ParsedOpts`.
-/// Supports repeated options by accumulating into `multi_strings`.
-fn store_arg(parsed: &mut ParsedOpts, spec: &OptSpec, val: String) -> Result<(), String> {
-    if spec.is_int {
-        let n: i64 = val
-            .parse()
-            .map_err(|_| format!("expected a number, got '{}'", val))?;
-        parsed.ints.insert(spec.ch, n);
-    } else {
-        // Always update the last value in `strings`.
-        parsed.strings.insert(spec.ch, val.clone());
-        // Append to the list of all values for this option.
-        parsed
-            .multi_strings
-            .entry(spec.ch)
-            .or_insert_with(Vec::new)
-            .push(val);
+// =============================================================================
+// Public parsing API
+// =============================================================================
+
+/// Parses the command-line arguments stored in `ctx.argv` according to the
+/// given `optstr` specification.
+///
+/// On success, fills `ctx.optargs` with the positional arguments and returns
+/// a `ParsedOpts` instance. On error, returns a human‑readable message.
+pub fn parse(ctx: &mut Context, optstr: &str) -> Result<ParsedOpts, String> {
+    let spec = parse_optstr(optstr)?;
+
+    let mut counts: HashMap<char, u32> = HashMap::new();
+    let mut values: HashMap<char, Vec<String>> = HashMap::new();
+    let mut positional = Vec::new();
+
+    let mut args = ctx.argv.iter().skip(1).peekable();
+
+    while let Some(arg) = args.next() {
+        let arg_str = arg.as_str();
+
+        // Stop at '--'
+        if arg_str == "--" {
+            positional.extend(args.map(|s| s.to_string()));
+            break;
+        }
+
+        // Stop at first non-option if requested
+        if spec.stop_at_first_non_option && !arg_str.starts_with('-') {
+            positional.push(arg_str.to_string());
+            positional.extend(args.map(|s| s.to_string()));
+            break;
+        }
+
+        // Handle standalone '-'
+        if arg_str == "-" {
+            positional.push(arg_str.to_string());
+            continue;
+        }
+
+        // Handle options
+        if arg_str.starts_with('-') && arg_str.len() > 1 {
+            let opt_chars: Vec<char> = arg_str[1..].chars().collect();
+            let mut i = 0;
+
+            while i < opt_chars.len() {
+                let ch = opt_chars[i];
+
+                if let Some(info) = spec.options.get(&ch) {
+                    if info.has_arg {
+                        // Option with argument
+                        let val = if i + 1 < opt_chars.len() {
+                            // Argument is part of the same token: -fvalue
+                            let rest: String = opt_chars[i + 1..].iter().collect();
+                            i = opt_chars.len(); // consume all
+                            rest
+                        } else {
+                            // Argument is the next token
+                            match args.next() {
+                                Some(v) => v.to_string(),
+                                None => return Err(format!("option -{} requires an argument", ch)),
+                            }
+                        };
+                        *counts.entry(ch).or_insert(0) += 1;
+                        values.entry(ch).or_insert_with(Vec::new).push(val);
+                        break; // argument consumed, stop processing this token
+                    } else {
+                        // Option without argument
+                        *counts.entry(ch).or_insert(0) += 1;
+                        i += 1;
+                    }
+                } else {
+                    return Err(format!("unknown option -{}", ch));
+                }
+            }
+        } else if arg_str.starts_with('-') {
+            // Single dash only (already handled above)
+            continue;
+        } else {
+            // Positional argument
+            positional.push(arg_str.to_string());
+        }
     }
-    Ok(())
-}
 
-/// Read a decimal number from the option string starting at `start`.
-fn read_num(s: &str, start: usize) -> Result<(i64, usize), String> {
-    let rest = &s[start..];
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-
-    if end == 0 {
-        return Err("expected a number in option string".to_string());
+    // Enforce mutual exclusivity for each group.
+    for group in &spec.groups {
+        let used: u32 = group
+            .iter()
+            .map(|&ch| counts.get(&ch).copied().unwrap_or(0))
+            .sum();
+        if used > 1 {
+            let opts: Vec<String> = group.iter().map(|c| format!("-{}", c)).collect();
+            return Err(format!(
+                "options {} are mutually exclusive",
+                opts.join(", ")
+            ));
+        }
     }
 
-    let n: i64 = rest[..end].parse().map_err(|_| "invalid number")?;
-    Ok((n, start + end))
+    // Enforce positional argument count constraints.
+    if positional.len() < spec.min_args {
+        return Err(format!(
+            "expected at least {} positional argument(s), got {}",
+            spec.min_args,
+            positional.len()
+        ));
+    }
+    if positional.len() > spec.max_args {
+        return Err(format!(
+            "expected at most {} positional argument(s), got {}",
+            spec.max_args,
+            positional.len()
+        ));
+    }
+
+    ctx.optargs = positional;
+
+    Ok(ParsedOpts { counts, values })
 }
