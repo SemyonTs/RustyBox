@@ -124,7 +124,7 @@ fn wc_main(ctx: &mut Context) -> u8 {
                 flag_w,
                 flag_c,
                 flag_m,
-                false,
+                true,
                 &mut writer,
                 &mut out_buf,
             );
@@ -230,6 +230,13 @@ fn print_counts(
     if show_file {
         out_buf.push(' ');
         out_buf.push_str(file);
+    }
+
+    // Trailing space only when filename is not shown AND it's not a "total" line.
+    // Matches POSIX/GNU/busybox: "wc file" → "NN NN NN \n"
+    //                         "wc f1 f2" → "NN NN NN f1\nNN NN NN f2\nNN NN NN total\n"
+    if !show_file && file != "total" {
+        out_buf.push(' ');
     }
 
     writeln!(writer, "{out_buf}").ok();

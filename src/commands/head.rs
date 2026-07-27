@@ -26,7 +26,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 /// The option string `"n:>0c:>0qv"` enforces that -n and -c values are
 /// positive integers.
 fn head_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "n:>0c:>0qv") {
+    let opts = match crate::args::parse(ctx, "n:c:qv") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("head: {e}");
