@@ -16,7 +16,7 @@ fn wc_default_counts() {
         .success()
         .stdout(predicate::function(|out: &str| {
             let parts: Vec<&str> = out.split_whitespace().collect();
-            parts.len() == 3 && parts[2] == "2" // total lines
+            parts.len() == 3 && parts[0] == "2" // total lines
         }));
 }
 
