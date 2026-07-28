@@ -279,7 +279,7 @@ fn tail_file(
     let mut line_num = 0;
 
     // Use BufReader directly on the file
-    let mut reader = BufReader::new(&mut f);
+    let reader = BufReader::new(&mut f);
 
     if from_line {
         // +N: start from line N
