@@ -1,5 +1,5 @@
 // =============================================================================
-// wc — Print newline, word, and byte counts for each file.
+// wc — Print newline, word, and byte or character count.
 // =============================================================================
 // Copyright (c) 2026 Semyon Tsarev
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -13,9 +13,11 @@
 //   -l   Print the newline count.
 //   -w   Print the word count.
 //   -c   Print the byte count.
-//   -m   Print the character count (may differ from -c for multibyte text).
+//   -m   Print the character count (replaces bytes in output per POSIX).
 //
 // When no options are given the default is `-lwc`.
+// Output order is strictly fixed by POSIX: lines, words, bytes/chars.
+// Options -c and -m are mutually exclusive.
 // =============================================================================
 
 use crate::context::Context;
@@ -27,7 +29,8 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 ///
 /// Reads from stdin when no file arguments are supplied.
 fn wc_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "lwc(m)") {
+    // lwcm registers all four flags; [cm] enforces mutual exclusivity.
+    let opts = match crate::args::parse(ctx, "lwcm[cm]") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("wc: {e}");
@@ -37,15 +40,20 @@ fn wc_main(ctx: &mut Context) -> u8 {
 
     let mut flag_l = opts.count('l') > 0;
     let mut flag_w = opts.count('w') > 0;
-    let mut flag_c = opts.count('c') > 0;
+    let flag_c = opts.count('c') > 0;
     let flag_m = opts.count('m') > 0;
 
     // Default: show lines, words, and bytes when no flag is set.
-    if !flag_l && !flag_w && !flag_c && !flag_m {
+    let no_flags = !flag_l && !flag_w && !flag_c && !flag_m;
+    if no_flags {
         flag_l = true;
         flag_w = true;
-        flag_c = true;
     }
+
+    // Determine whether to print bytes/chars column.
+    // Per POSIX: if neither -c nor -m is specified but other flags are,
+    // do NOT print bytes/chars. If no flags at all, default includes bytes.
+    let print_bytes_or_chars = flag_c || flag_m || no_flags;
 
     let mut total_lines = 0u64;
     let mut total_words = 0u64;
@@ -68,7 +76,7 @@ fn wc_main(ctx: &mut Context) -> u8 {
                     ch,
                     flag_l,
                     flag_w,
-                    flag_c,
+                    print_bytes_or_chars,
                     flag_m,
                     false,
                     &mut writer,
@@ -94,7 +102,7 @@ fn wc_main(ctx: &mut Context) -> u8 {
                         ch,
                         flag_l,
                         flag_w,
-                        flag_c,
+                        print_bytes_or_chars,
                         flag_m,
                         multiple,
                         &mut writer,
@@ -122,7 +130,7 @@ fn wc_main(ctx: &mut Context) -> u8 {
                 total_chars,
                 flag_l,
                 flag_w,
-                flag_c,
+                print_bytes_or_chars,
                 flag_m,
                 true,
                 &mut writer,
@@ -188,6 +196,11 @@ fn count_words(s: &str) -> u64 {
 }
 
 /// Print one row of counts directly into a reusable buffer.
+///
+/// POSIX mandates a fixed output order: lines, words, bytes/chars.
+/// The order of columns does NOT depend on the order flags were specified
+/// on the command line. Only ONE of bytes (-c) or chars (-m) is printed,
+/// never both.
 fn print_counts(
     file: &str,
     l: u64,
@@ -196,7 +209,7 @@ fn print_counts(
     ch: u64,
     flag_l: bool,
     flag_w: bool,
-    flag_c: bool,
+    print_bytes_or_chars: bool,
     flag_m: bool,
     show_file: bool,
     writer: &mut BufWriter<std::io::StdoutLock>,
@@ -214,17 +227,19 @@ fn print_counts(
         first = false;
     };
 
+    // Fixed POSIX order: lines, words, bytes OR chars
     if flag_l {
         push(l);
     }
     if flag_w {
         push(w);
     }
-    if flag_m {
-        push(ch);
-    }
-    if flag_c {
-        push(c);
+    if print_bytes_or_chars {
+        if flag_m {
+            push(ch);
+        } else {
+            push(c);
+        }
     }
 
     if show_file {
@@ -233,8 +248,6 @@ fn print_counts(
     }
 
     // Trailing space only when filename is not shown AND it's not a "total" line.
-    // Matches POSIX/GNU/busybox: "wc file" → "NN NN NN \n"
-    //                         "wc f1 f2" → "NN NN NN f1\nNN NN NN f2\nNN NN NN total\n"
     if !show_file && file != "total" {
         out_buf.push(' ');
     }
@@ -242,4 +255,4 @@ fn print_counts(
     writeln!(writer, "{out_buf}").ok();
 }
 
-register_command!(WC_CMD, "wc", "lwc(m)", CommandFlags::BIN.bits(), wc_main);
+register_command!(WC_CMD, "wc", "lwcm[cm]", CommandFlags::BIN.bits(), wc_main);
