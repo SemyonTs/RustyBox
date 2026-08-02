@@ -20,14 +20,13 @@ use std::fs;
 ///
 /// The option string `"<2>2"` enforces exactly two positional arguments.
 fn link_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "<2>2") {
-        Ok(o) => o,
+    match crate::args::parse(ctx, "<2>2") {
+        Ok(_) => {}
         Err(e) => {
             eprintln!("link: {e}");
             return 1;
         }
     };
-    let _ = opts;
 
     let file = &ctx.optargs[0];
     let newlink = &ctx.optargs[1];
