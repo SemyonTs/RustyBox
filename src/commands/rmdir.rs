@@ -21,10 +21,10 @@ use std::fs;
 
 /// Entry point for the `rmdir` builtin.
 ///
-/// The option string `"<1(ignore-fail-on-non-empty)p(parents)"` requires at
-/// least one positional argument.
+/// The option string requires at least one positional argument.
+/// `(i)` provides a short alias for `--ignore-fail-on-non-empty`.
 fn rmdir_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "<1(ignore-fail-on-non-empty)p(parents)") {
+    let opts = match crate::args::parse(ctx, "<1(ignore-fail-on-non-empty)(i)p(parents)") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("rmdir: {e}");
@@ -33,7 +33,9 @@ fn rmdir_main(ctx: &mut Context) -> u8 {
     };
 
     let flag_p = opts.count('p') > 0;
-    let ignore_nonempty = opts.count('i') > 0; // longopt ignore-fail-on-non-empty
+    // Check both the short alias 'i' and rely on the fact that our parser
+    // maps the long option to 'i' via the (i) alias in optstr.
+    let ignore_nonempty = opts.count('i') > 0;
 
     let mut exit_code: u8 = 0;
     for name in &ctx.optargs {
@@ -47,7 +49,9 @@ fn rmdir_main(ctx: &mut Context) -> u8 {
 
 /// Remove a directory, and optionally its ancestors when `parents` is true.
 ///
-/// Returns `true` on success.
+/// Returns `true` on success. When `-p` is specified, stops ascending and
+/// returns `true` if a parent cannot be removed because it is not empty or
+/// due to permission errors (matching GNU rmdir behavior).
 fn do_rmdir(name: &str, parents: bool, ignore_nonempty: bool) -> bool {
     // Work with a &str slice into the original path, only allocating when
     // the path contains trailing slashes that need trimming.
@@ -62,19 +66,43 @@ fn do_rmdir(name: &str, parents: bool, ignore_nonempty: bool) -> bool {
         name
     };
 
+    // Track whether the original target was successfully removed.
+    // For -p, we return success if the target was removed even if a parent
+    // could not be (due to non-empty or permission issues).
+    let mut target_removed = false;
+
     loop {
         match fs::remove_dir(current) {
-            Ok(()) => {}
+            Ok(()) => {
+                if !target_removed {
+                    target_removed = true;
+                }
+            }
             Err(e) => {
+                let kind = e.kind();
+
                 // Suppress the error when the directory is non-empty and the
-                // caller requested `--ignore-fail-on-non-empty`.
+                // caller requested --ignore-fail-on-non-empty.
                 if ignore_nonempty
                     && matches!(
-                        e.kind(),
+                        kind,
                         std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::Other
                     )
                 {
                     return true;
+                }
+
+                // For -p: stop ascending silently on DirectoryNotEmpty or
+                // PermissionDenied. Return success if the original target
+                // was already removed.
+                if parents
+                    && matches!(
+                        kind,
+                        std::io::ErrorKind::DirectoryNotEmpty
+                            | std::io::ErrorKind::PermissionDenied
+                    )
+                {
+                    return target_removed;
                 }
 
                 eprintln!("rmdir: cannot remove '{}': {}", current, e);
@@ -103,7 +131,7 @@ fn do_rmdir(name: &str, parents: bool, ignore_nonempty: bool) -> bool {
 register_command!(
     RMDIR_CMD,
     "rmdir",
-    "<1(ignore-fail-on-non-empty)p(parents)",
+    "<1(ignore-fail-on-non-empty)(i)p(parents)",
     CommandFlags::BIN.bits(),
     rmdir_main
 );
