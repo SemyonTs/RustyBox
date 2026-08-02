@@ -17,3 +17,4 @@ pub mod commands;
 pub mod context;
 pub mod flags;
 pub mod registry;
+pub mod sh;

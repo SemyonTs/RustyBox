@@ -63,7 +63,6 @@ mod readlink;
 mod rm;
 mod rmdir;
 mod sed;
-mod sh;
 mod sleep;
 mod sort;
 mod tail;
