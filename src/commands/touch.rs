@@ -27,9 +27,6 @@ use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Entry point for the `touch` builtin.
-///
-/// The option string `"<1acd:fmr:t:h[!dtr]"` requires at least one file
-/// operand and marks `-d`, `-t`, and `-r` as mutually exclusive.
 fn touch_main(ctx: &mut Context) -> u8 {
     let opts = match crate::args::parse(ctx, "<1acd:fmr:t:h[!dtr]") {
         Ok(o) => o,
@@ -44,13 +41,16 @@ fn touch_main(ctx: &mut Context) -> u8 {
     let flag_c = opts.count('c') > 0;
     let flag_h = opts.count('h') > 0;
     let date = opts.get_str('d').unwrap_or("");
-    let time = opts.get_str('t').unwrap_or("");
+    let time_spec = opts.get_str('t').unwrap_or("");
     let ref_file = opts.get_str('r').unwrap_or("");
 
     // Determine the target timestamp(s).
-    let (atime, mtime) = if !ref_file.is_empty() {
+    let (target_atime, target_mtime) = if !ref_file.is_empty() {
         match fs::symlink_metadata(ref_file) {
-            Ok(m) => (m.atime(), m.mtime()),
+            Ok(m) => (
+                FileTime::from_unix_time(m.atime(), m.atime_nsec() as u32),
+                FileTime::from_unix_time(m.mtime(), m.mtime_nsec() as u32),
+            ),
             Err(e) => {
                 eprintln!("touch: '{}': {}", ref_file, e);
                 return 1;
@@ -64,31 +64,35 @@ fn touch_main(ctx: &mut Context) -> u8 {
                 return 1;
             }
         }
-    } else if !time.is_empty() {
-        match parse_time(time) {
+    } else if !time_spec.is_empty() {
+        match parse_time(time_spec) {
             Ok(t) => (t, t),
             Err(e) => {
-                eprintln!("touch: invalid time '{}': {}", time, e);
+                eprintln!("touch: invalid time '{}': {}", time_spec, e);
                 return 1;
             }
         }
     } else {
-        let now = now_secs();
+        let now = FileTime::from_system_time(SystemTime::now());
         (now, now)
     };
 
     // Decide which timestamps to modify based on -a / -m.
-    let (atime_opt, mtime_opt): (Option<i64>, Option<i64>) = if flag_a && !flag_m {
-        (Some(atime), None)
-    } else if flag_m && !flag_a {
-        (None, Some(mtime))
-    } else {
-        (Some(atime), Some(mtime))
-    };
+    // Per POSIX: if neither -a nor -m is specified, behave as if both were.
+    let update_atime = flag_a || (!flag_a && !flag_m);
+    let update_mtime = flag_m || (!flag_a && !flag_m);
 
     let mut exit_code: u8 = 0;
     for file in &ctx.optargs {
-        if !set_times(file, atime_opt, mtime_opt, flag_c, flag_h) {
+        if !set_times(
+            file,
+            update_atime,
+            update_mtime,
+            target_atime,
+            target_mtime,
+            flag_c,
+            flag_h,
+        ) {
             exit_code = 1;
         }
     }
@@ -99,82 +103,83 @@ fn touch_main(ctx: &mut Context) -> u8 {
 /// Apply the requested timestamps to a single file.
 ///
 /// When the file does not exist and `-c` is absent a zero-length file is
-/// created first.  Returns `true` on success.
+/// created first. Returns `true` on success.
 fn set_times(
     file: &str,
-    atime: Option<i64>,
-    mtime: Option<i64>,
+    update_atime: bool,
+    update_mtime: bool,
+    target_atime: FileTime,
+    target_mtime: FileTime,
     no_create: bool,
     no_deref: bool,
 ) -> bool {
-    let set_result = if no_deref {
-        set_symlink_times(file, atime, mtime)
+    // Check existence first for -c handling
+    let exists = if no_deref {
+        fs::symlink_metadata(file).is_ok()
     } else {
-        set_file_times(file, atime, mtime)
+        fs::metadata(file).is_ok()
     };
 
-    if set_result.is_ok() {
-        return true;
-    }
-
-    // If the file is missing and creation is allowed, create it and retry.
-    if !no_create {
-        if fs::OpenOptions::new()
+    if !exists {
+        if no_create {
+            // POSIX: -c means silently skip non-existent files
+            return true;
+        }
+        // Create the file
+        if let Err(e) = fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
             .open(file)
-            .is_ok()
         {
-            let retry = if no_deref {
-                set_symlink_times(file, atime, mtime)
-            } else {
-                set_file_times(file, atime, mtime)
-            };
-            return retry.is_ok();
+            eprintln!("touch: cannot touch '{}': {}", file, e);
+            return false;
         }
     }
 
-    eprintln!("touch: cannot set times on '{}'", file);
-    false
-}
-
-/// Convert a Unix timestamp (seconds) to `SystemTime`.
-fn to_system_time(secs: i64) -> SystemTime {
-    if secs >= 0 {
-        UNIX_EPOCH + Duration::from_secs(secs as u64)
+    // Read existing metadata to preserve timestamps when only one is updated
+    let meta = if no_deref {
+        fs::symlink_metadata(file)
     } else {
-        UNIX_EPOCH - Duration::from_secs((-secs) as u64)
+        fs::metadata(file)
+    };
+
+    let meta = match meta {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("touch: cannot stat '{}': {}", file, e);
+            return false;
+        }
+    };
+
+    let final_atime = if update_atime {
+        target_atime
+    } else {
+        FileTime::from_unix_time(meta.atime(), meta.atime_nsec() as u32)
+    };
+
+    let final_mtime = if update_mtime {
+        target_mtime
+    } else {
+        FileTime::from_unix_time(meta.mtime(), meta.mtime_nsec() as u32)
+    };
+
+    let result = if no_deref {
+        filetime::set_symlink_file_times(file, final_atime, final_mtime)
+    } else {
+        filetime::set_file_times(file, final_atime, final_mtime)
+    };
+
+    if let Err(e) = result {
+        eprintln!("touch: cannot set times on '{}': {}", file, e);
+        return false;
     }
-}
 
-/// Set access and modification times on a regular file or directory.
-fn set_file_times(file: &str, atime: Option<i64>, mtime: Option<i64>) -> std::io::Result<()> {
-    let now = SystemTime::now();
-    let a: FileTime = atime.map_or(now, |t| to_system_time(t)).into();
-    let m: FileTime = mtime.map_or(now, |t| to_system_time(t)).into();
-    filetime::set_file_times(file, a, m)
-}
-
-/// Set access and modification times on a symlink itself (`-h`).
-fn set_symlink_times(file: &str, atime: Option<i64>, mtime: Option<i64>) -> std::io::Result<()> {
-    let now = SystemTime::now();
-    let a: FileTime = atime.map_or(now, |t| to_system_time(t)).into();
-    let m: FileTime = mtime.map_or(now, |t| to_system_time(t)).into();
-    filetime::set_symlink_file_times(file, a, m)
-}
-
-/// Return the current time as seconds since the Unix epoch.
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
+    true
 }
 
 /// Parse a `-d` date string: `YYYY-MM-DD hh:mm:ss` (or with `T` separator).
-fn parse_date(s: &str) -> Result<i64, String> {
-    // Split on 'T' or ' ' without allocating a new String.
+fn parse_date(s: &str) -> Result<FileTime, String> {
     let (date_part, time_part) = if let Some((d, t)) = s.split_once('T') {
         (d, t)
     } else if let Some((d, t)) = s.split_once(' ') {
@@ -196,41 +201,47 @@ fn parse_date(s: &str) -> Result<i64, String> {
     let h: i64 = time[0].parse().map_err(|_| "hours".to_string())?;
     let mi: i64 = time[1].parse().map_err(|_| "minutes".to_string())?;
     let sec: i64 = if time.len() > 2 {
-        time[2].parse().unwrap_or(0)
+        // Handle fractional seconds: strip after '.' or ','
+        let sec_str = time[2].split('.').next().unwrap_or(time[2]);
+        let sec_str = sec_str.split(',').next().unwrap_or(sec_str);
+        sec_str.parse().unwrap_or(0)
     } else {
         0
     };
 
-    unix_from_ymdhms(y, mo, d, h, mi, sec)
+    let unix_ts = unix_from_ymdhms(y, mo, d, h, mi, sec)?;
+    Ok(FileTime::from_unix_time(unix_ts, 0))
 }
 
 /// Parse a `-t` time string: `[[CC]YY]MMDDhhmm[.ss]`.
-fn parse_time(s: &str) -> Result<i64, String> {
-    let main = match s.find('.') {
-        Some(i) => &s[..i],
-        None => s,
+fn parse_time(s: &str) -> Result<FileTime, String> {
+    let (main, secs) = match s.find('.') {
+        Some(i) => (&s[..i], s[i + 1..].parse::<i64>().unwrap_or(0)),
+        None => (s, 0i64),
     };
 
     let digits = main.as_bytes();
     let len = digits.len();
 
-    let (y, mo, d, h, mi, sec) = match len {
+    let (y, mo, d, h, mi) = match len {
         8 => (
-            1970,
+            1970i64,
             two_digit(&digits[0..2])? as i64,
             two_digit(&digits[2..4])? as i64,
             two_digit(&digits[4..6])? as i64,
             two_digit(&digits[6..8])? as i64,
-            0,
         ),
-        10 => (
-            two_digit(&digits[0..2])? as i64 + 2000,
-            two_digit(&digits[2..4])? as i64,
-            two_digit(&digits[4..6])? as i64,
-            two_digit(&digits[6..8])? as i64,
-            two_digit(&digits[8..10])? as i64,
-            0,
-        ),
+        10 => {
+            let yy = two_digit(&digits[0..2])? as i64;
+            let cc = if yy >= 69 { 1900 } else { 2000 };
+            (
+                cc + yy,
+                two_digit(&digits[2..4])? as i64,
+                two_digit(&digits[4..6])? as i64,
+                two_digit(&digits[6..8])? as i64,
+                two_digit(&digits[8..10])? as i64,
+            )
+        }
         12 => {
             let y = ((digits[0] - b'0') as i64 * 1000)
                 + ((digits[1] - b'0') as i64 * 100)
@@ -242,13 +253,13 @@ fn parse_time(s: &str) -> Result<i64, String> {
                 two_digit(&digits[6..8])? as i64,
                 two_digit(&digits[8..10])? as i64,
                 two_digit(&digits[10..12])? as i64,
-                0,
             )
         }
-        _ => return Err("expected [[CC]YY]MMDDhhmm".to_string()),
+        _ => return Err("expected [[CC]YY]MMDDhhmm[.ss]".to_string()),
     };
 
-    unix_from_ymdhms(y, mo, d, h, mi, sec)
+    let unix_ts = unix_from_ymdhms(y, mo, d, h, mi, secs)?;
+    Ok(FileTime::from_unix_time(unix_ts, 0))
 }
 
 /// Parse two ASCII digits into a u32.
@@ -269,8 +280,14 @@ fn unix_from_ymdhms(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Result<
     let mut days = 0i64;
 
     // Count complete years since 1970.
-    for yy in 1970..y {
-        days += if is_leap(yy) { 366 } else { 365 };
+    if y >= 1970 {
+        for yy in 1970..y {
+            days += if is_leap(yy) { 366 } else { 365 };
+        }
+    } else {
+        for yy in y..1970 {
+            days -= if is_leap(yy) { 366 } else { 365 };
+        }
     }
 
     // Count complete months in the current year.
