@@ -26,13 +26,14 @@
 //   -u      With -t: sort by access time instead of modification time.
 //   -C      Multi-column output (default when stdout is a terminal).
 //   -x      Sort entries horizontally across columns.
+//   --color[=WHEN]  Colorize output (auto, always, never).
 // =============================================================================
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::ffi::CStr;
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -67,6 +68,45 @@ struct Entry {
 ///
 /// When no arguments are given the current directory is listed.
 fn ls_main(ctx: &mut Context) -> u8 {
+    // Pre-process argv to extract --color options before the short-option parser sees them.
+    let mut color_mode = "never".to_string();
+    let filtered_argv: Vec<String> = ctx
+        .argv
+        .iter()
+        .enumerate()
+        .filter_map(|(i, arg)| {
+            if i == 0 {
+                return Some(arg.clone()); // Keep the command name
+            }
+            match arg.as_str() {
+                "--color" | "--color=auto" => {
+                    color_mode = "auto".to_string();
+                    None
+                }
+                "--color=always" | "--color=yes" => {
+                    color_mode = "always".to_string();
+                    None
+                }
+                "--color=never" | "--color=no" => {
+                    color_mode = "never".to_string();
+                    None
+                }
+                _ => Some(arg.clone()),
+            }
+        })
+        .collect();
+
+    // Replace ctx.argv so the standard parser ignores the long option
+    ctx.argv = filtered_argv;
+
+    let use_color = if color_mode == "always" {
+        true
+    } else if color_mode == "auto" {
+        std::io::stdout().is_terminal()
+    } else {
+        false
+    };
+
     let opts = match crate::args::parse(ctx, "1aAdfhiklRrstu[-Cx1]") {
         Ok(o) => o,
         Err(e) => {
@@ -113,6 +153,7 @@ fn ls_main(ctx: &mut Context) -> u8 {
             flag_S,
             flag_t,
             flag_u,
+            use_color,
             &mut exit_code,
             multiple,
             false, // first
@@ -150,6 +191,7 @@ fn ls_main(ctx: &mut Context) -> u8 {
                     flag_i,
                     flag_F,
                     flag_1,
+                    use_color,
                     &mut writer,
                     &mut out_buf,
                 );
@@ -168,6 +210,7 @@ fn ls_main(ctx: &mut Context) -> u8 {
                     flag_S,
                     flag_t,
                     flag_u,
+                    use_color,
                     &mut exit_code,
                     multiple,
                     first,
@@ -231,6 +274,7 @@ fn list_dir(
     flag_S: bool,
     flag_t: bool,
     flag_u: bool,
+    use_color: bool,
     exit_code: &mut u8,
     multiple: bool,
     first: bool,
@@ -312,7 +356,7 @@ fn list_dir(
     }
 
     print_entries(
-        &entries, flag_l, flag_h, flag_i, flag_F, flag_1, writer, out_buf,
+        &entries, flag_l, flag_h, flag_i, flag_F, flag_1, use_color, writer, out_buf,
     );
 
     // Recursive descent into subdirectories.
@@ -332,7 +376,7 @@ fn list_dir(
                 writeln!(writer, "{}:", sub).ok();
                 list_dir(
                     &sub, flag_l, flag_a, flag_A, flag_R, flag_h, flag_i, flag_F, flag_1, flag_r,
-                    flag_S, flag_t, flag_u, exit_code, false, false, writer, out_buf,
+                    flag_S, flag_t, flag_u, use_color, exit_code, false, false, writer, out_buf,
                 );
             }
         }
@@ -377,6 +421,7 @@ fn print_entries(
     flag_i: bool,
     flag_F: bool,
     flag_1: bool,
+    use_color: bool,
     writer: &mut BufWriter<std::io::StdoutLock>,
     out_buf: &mut String,
 ) {
@@ -386,19 +431,17 @@ fn print_entries(
         writeln!(writer, "total {} blocks", total_blocks).ok();
 
         for e in entries {
-            print_long(e, flag_h, flag_i, flag_F, writer, out_buf);
+            print_long(e, flag_h, flag_i, flag_F, use_color, writer, out_buf);
         }
     } else if flag_1 || entries.len() <= 1 {
         for e in entries {
             out_buf.clear();
-            out_buf.push_str(&e.name);
-            if flag_F {
-                out_buf.push_str(suffix(e));
-            }
+            out_buf.push_str(&format_entry_name(e, flag_F, use_color));
             writeln!(writer, "{out_buf}").ok();
         }
     } else {
         // Multi-column layout, targeting an 80-column terminal.
+        // Calculate width based on raw string length to avoid ANSI code interference.
         let width = entries
             .iter()
             .map(|e| e.name.len() + if flag_F { suffix(e).len() } else { 0 } + 1)
@@ -407,15 +450,16 @@ fn print_entries(
         let cols = std::cmp::max(1, 80 / width);
 
         for (i, e) in entries.iter().enumerate() {
-            out_buf.clear();
-            out_buf.push_str(&e.name);
-            if flag_F {
-                out_buf.push_str(suffix(e));
-            }
+            let raw_len = e.name.len() + if flag_F { suffix(e).len() } else { 0 };
+            let display_name = format_entry_name(e, flag_F, use_color);
+
             if i % cols == cols - 1 {
-                writeln!(writer, "{out_buf}").ok();
+                writeln!(writer, "{}", display_name).ok();
             } else {
-                write!(writer, "{out_buf:<width$}", width = width).ok();
+                // Pad with spaces after the colored string.
+                // Since format_entry_name ends with a reset code, the padding will be uncolored.
+                let padding = width.saturating_sub(raw_len);
+                write!(writer, "{}{:width$}", display_name, "", width = padding).ok();
             }
         }
 
@@ -423,6 +467,45 @@ fn print_entries(
             writeln!(writer).ok();
         }
     }
+}
+
+/// Format the entry name with optional colorization and `-F` suffix.
+fn format_entry_name(e: &Entry, flag_F: bool, use_color: bool) -> String {
+    if !use_color {
+        let mut s = e.name.clone();
+        if flag_F {
+            s.push_str(suffix(e));
+        }
+        return s;
+    }
+
+    let color = if e.is_dir {
+        "\x1b[01;34m" // Bold Blue
+    } else if e.is_symlink {
+        "\x1b[01;36m" // Bold Cyan
+    } else if e.is_exec {
+        "\x1b[01;32m" // Bold Green
+    } else if e.is_socket {
+        "\x1b[01;35m" // Bold Magenta
+    } else if e.is_fifo {
+        "\x1b[33m" // Yellow
+    } else {
+        ""
+    };
+
+    let reset = "\x1b[0m";
+    let mut s = String::new();
+    if !color.is_empty() {
+        s.push_str(color);
+    }
+    s.push_str(&e.name);
+    if flag_F {
+        s.push_str(suffix(e));
+    }
+    if !color.is_empty() {
+        s.push_str(reset);
+    }
+    s
 }
 
 /// Return the `-F` type-indicator suffix for an entry as a `&str`.
@@ -448,6 +531,7 @@ fn print_long(
     flag_h: bool,
     flag_i: bool,
     flag_F: bool,
+    use_color: bool,
     writer: &mut BufWriter<std::io::StdoutLock>,
     out_buf: &mut String,
 ) {
@@ -473,14 +557,16 @@ fn print_long(
         perms, e.nlink, owner, group, size_str, date
     )
     .unwrap();
-    out_buf.push_str(&e.name);
+
+    out_buf.push_str(&format_entry_name(e, flag_F, use_color));
+
     if e.is_symlink {
         if let Some(t) = &e.symlink_target {
-            out_buf.push_str(" -> ");
+            // Colorize the symlink arrow and target (cyan, matching standard ls behavior)
+            out_buf.push_str(" -> \x1b[01;36m");
             out_buf.push_str(t);
+            out_buf.push_str("\x1b[0m");
         }
-    } else if flag_F {
-        out_buf.push_str(suffix(e));
     }
 
     writeln!(writer, "{out_buf}").ok();
