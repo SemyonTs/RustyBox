@@ -14,6 +14,10 @@
 //   -s         Display only a total for each argument (summary).
 //   -a         Show counts for all files, not just directories.
 //   -d DEPTH   Limit recursion to DEPTH levels below each argument.
+//   -H         Follow symlinks specified on the command line.
+//   -k         Write file sizes in 1024-byte blocks.
+//   -L         Follow all symlinks.
+//   -x         Limit to the same filesystem.
 // =============================================================================
 
 use crate::context::Context;
@@ -25,7 +29,7 @@ use std::os::unix::fs::MetadataExt;
 ///
 /// When no paths are given the current directory is used by default.
 fn du_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "hsad:") {
+    let opts = match crate::args::parse(ctx, "hsad:HkLx") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("du: {e}");
@@ -36,12 +40,29 @@ fn du_main(ctx: &mut Context) -> u8 {
     let flag_h = opts.count('h') > 0;
     let flag_s = opts.count('s') > 0;
     let flag_a = opts.count('a') > 0;
+    let flag_k = opts.count('k') > 0;
+    let flag_H = opts.count('H') > 0;
+    let flag_L = opts.count('L') > 0;
+    let flag_x = opts.count('x') > 0;
     let depth = opts.get_int('d').unwrap_or(-1);
 
     let mut exit_code: u8 = 0;
 
     if ctx.optargs.is_empty() {
-        match du_dir(".", flag_h, flag_s, flag_a, depth, 0, &mut exit_code) {
+        match du_dir(
+            ".",
+            flag_h,
+            flag_s,
+            flag_a,
+            flag_k,
+            flag_H,
+            flag_L,
+            flag_x,
+            None,
+            depth,
+            0,
+            &mut exit_code,
+        ) {
             Err(e) => {
                 eprintln!("du: {e}");
                 exit_code = 1;
@@ -50,7 +71,20 @@ fn du_main(ctx: &mut Context) -> u8 {
         }
     } else {
         for dir in &ctx.optargs {
-            match du_dir(dir, flag_h, flag_s, flag_a, depth, 0, &mut exit_code) {
+            match du_dir(
+                dir,
+                flag_h,
+                flag_s,
+                flag_a,
+                flag_k,
+                flag_H,
+                flag_L,
+                flag_x,
+                None,
+                depth,
+                0,
+                &mut exit_code,
+            ) {
                 Err(e) => {
                     eprintln!("du: {e}");
                     exit_code = 1;
@@ -65,36 +99,60 @@ fn du_main(ctx: &mut Context) -> u8 {
 
 /// Recursively accumulate disk usage for a single filesystem entry.
 ///
-/// Returns the total number of 512-byte blocks allocated to the subtree
-/// rooted at `dir`.  The size of each node is reported according to the
-/// active flags (summary, all-files, depth limit).
+/// Returns the total number of blocks allocated to the subtree
+/// rooted at `dir`. The size of each node is reported according to the
+/// active flags (summary, all-files, depth limit, block size).
 fn du_dir(
     dir: &str,
     flag_h: bool,
     flag_s: bool,
     flag_a: bool,
+    flag_k: bool,
+    flag_H: bool,
+    flag_L: bool,
+    flag_x: bool,
+    root_dev: Option<u64>,
     max_depth: i64,
     cur_depth: i64,
     exit_code: &mut u8,
 ) -> Result<u64, String> {
-    let meta = fs::symlink_metadata(dir).map_err(|e| format!("'{dir}': {e}"))?;
+    let follow_symlink = flag_L || (flag_H && cur_depth == 0);
+    let meta = if follow_symlink {
+        fs::metadata(dir).map_err(|e| format!("'{dir}': {e}"))?
+    } else {
+        fs::symlink_metadata(dir).map_err(|e| format!("'{dir}': {e}"))?
+    };
 
-    // Non-directory entry: report its own block count when -a is active.
+    if flag_x {
+        let dev = meta.dev();
+        let current_root_dev = root_dev.unwrap_or(dev);
+        if cur_depth > 0 && dev != current_root_dev {
+            return Ok(0);
+        }
+    }
+
+    // meta.blocks() always returns 512-byte blocks on Unix.
+    let size_512 = meta.blocks();
+    // Convert to 1024-byte blocks if -k is specified, rounding up.
+    let size = if flag_k { (size_512 + 1) / 2 } else { size_512 };
+
     if !meta.is_dir() {
-        let size = meta.blocks() / 2; // Convert 1024-byte blocks to 512-byte units.
-        if flag_a {
-            println!("{} {}", format_blocks(size, flag_h), dir);
+        if flag_a || cur_depth == 0 {
+            println!("{} {}", format_blocks(size, flag_h, flag_k), dir);
         }
         return Ok(size);
     }
 
-    // Directory: start with the blocks consumed by the directory itself.
-    let mut total = meta.blocks() / 2;
+    let mut total = size;
 
-    // Descend into children unless summarising (-s) or the depth limit has
-    // been reached.
     if !flag_s && (max_depth < 0 || cur_depth < max_depth) {
         let rd = fs::read_dir(dir).map_err(|e| format!("'{dir}': {e}"))?;
+        let current_root_dev = if flag_x {
+            root_dev.or(Some(meta.dev()))
+        } else {
+            None
+        };
+
         for item in rd {
             let entry = match item {
                 Ok(e) => e,
@@ -113,24 +171,17 @@ fn du_dir(
                 continue;
             }
 
-            let meta2 = match fs::symlink_metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-
-            // Do not follow symlinks; they contribute zero blocks to the
-            // parent's total.
-            if meta2.file_type().is_symlink() {
-                continue;
-            }
-
-            // Use to_str() to borrow the path as &str when possible.
             let sub = path.to_str().unwrap_or_default();
             match du_dir(
                 sub,
                 flag_h,
                 flag_s,
                 flag_a,
+                flag_k,
+                flag_H,
+                flag_L,
+                flag_x,
+                current_root_dev,
                 max_depth,
                 cur_depth + 1,
                 exit_code,
@@ -144,10 +195,8 @@ fn du_dir(
         }
     }
 
-    // Report the aggregate total for this level.
-    // When -s is active only the top-level argument is printed.
     if !flag_s || cur_depth == 0 {
-        println!("{} {}", format_blocks(total, flag_h), dir);
+        println!("{} {}", format_blocks(total, flag_h, flag_k), dir);
     }
 
     Ok(total)
@@ -157,10 +206,11 @@ fn du_dir(
 ///
 /// Returns the raw block count unless `flag_h` is true, in which case the
 /// size is converted to bytes and rendered with a human-readable suffix.
-fn format_blocks(blocks: u64, flag_h: bool) -> String {
-    let kb = blocks * 1024; // 512-byte blocks → bytes.
+fn format_blocks(blocks: u64, flag_h: bool, flag_k: bool) -> String {
     if flag_h {
-        human_size(kb)
+        // Reconstruct bytes for human-readable formatting based on active block unit.
+        let bytes = if flag_k { blocks * 1024 } else { blocks * 512 };
+        human_size(bytes)
     } else {
         blocks.to_string()
     }
@@ -187,4 +237,4 @@ fn human_size(size: u64) -> String {
     }
 }
 
-register_command!(DU_CMD, "du", "hsad:", CommandFlags::BIN.bits(), du_main);
+register_command!(DU_CMD, "du", "hsad:HkLx", CommandFlags::BIN.bits(), du_main);
