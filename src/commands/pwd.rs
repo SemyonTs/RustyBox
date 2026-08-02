@@ -36,7 +36,18 @@ fn pwd_main(ctx: &mut Context) -> u8 {
 
     let flag_p = opts.count('P') > 0;
 
-    // Physical path (always available).
+    // Logical path: prefer $PWD when it is a valid alias for the physical
+    // directory and -P was not requested.
+    if !flag_p {
+        if let Ok(pwd_env) = env::var("PWD") {
+            if is_valid_pwd(&pwd_env) {
+                println!("{pwd_env}");
+                return 0;
+            }
+        }
+    }
+
+    // Fall back to physical path.
     let cwd = match env::current_dir() {
         Ok(p) => p,
         Err(e) => {
@@ -45,41 +56,17 @@ fn pwd_main(ctx: &mut Context) -> u8 {
         }
     };
 
-    // Logical path: prefer $PWD when it is a valid alias for the physical
-    // directory and -P was not requested.
-    if !flag_p {
-        if let Ok(pwd_env) = env::var("PWD") {
-            if is_valid_pwd(&cwd, &pwd_env) {
-                println!("{pwd_env}");
-                return 0;
-            }
-        }
-    }
-
-    // Fall back to physical path.
     println!("{}", cwd.display());
     0
 }
 
-/// Verify that `pwd_env` is a legitimate logical path for `cwd`.
+/// Verify that `pwd_env` is a legitimate logical path for the current directory.
 ///
-/// The value must be an absolute path that does not contain `.` or `..`
-/// components, and it must resolve to the same device/inode pair as `cwd`.
-fn is_valid_pwd(cwd: &std::path::Path, pwd_env: &str) -> bool {
-    // Must be absolute.
-    if !pwd_env.starts_with('/') {
-        return false;
-    }
-
-    // Reject any path containing a literal `.` or `..` segment.
-    for seg in pwd_env.split('/').skip(1) {
-        if seg == "." || seg == ".." {
-            return false;
-        }
-    }
-
-    // Compare the device and inode of both paths.
-    let st1 = match fs::metadata(cwd) {
+/// POSIX strictly requires an absolute path without `.` or `..` components.
+/// However, following Toybox's more permissive behavior, we simply verify
+/// that the path resolves to the same device/inode pair as `.`.
+fn is_valid_pwd(pwd_env: &str) -> bool {
+    let st1 = match fs::metadata(".") {
         Ok(m) => m,
         Err(_) => return false,
     };
