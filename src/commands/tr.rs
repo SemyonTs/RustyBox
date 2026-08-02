@@ -35,8 +35,23 @@ fn tr_main(ctx: &mut Context) -> u8 {
     let flag_s = opts.count('s') > 0;
     let flag_c = opts.count('c') > 0;
 
+    // POSIX: tr requires exactly two operands unless -d or -s is specified.
+    // With -d: one operand (SET1) is required.
+    // With -s and no translation: one operand (SET1) is sufficient.
+    // Without -d and without -s: two operands (SET1 and SET2) are required.
     if ctx.optargs.is_empty() {
-        eprintln!("tr: missing SET1");
+        eprintln!("tr: missing operand");
+        return 1;
+    }
+
+    let needs_set2 = !flag_d && !flag_s;
+    if needs_set2 && ctx.optargs.len() < 2 {
+        eprintln!("tr: missing SET2 for translation");
+        return 1;
+    }
+
+    if ctx.optargs.len() > 2 {
+        eprintln!("tr: extra operand");
         return 1;
     }
 
