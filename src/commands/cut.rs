@@ -42,20 +42,73 @@ fn cut_main(ctx: &mut Context) -> u8 {
     let fields_raw = opts.get_str('f').unwrap_or("");
     let delim_str_raw = opts.get_str('d').unwrap_or("\t");
 
-    let mode = if !bytes_raw.is_empty() {
-        Mode::Bytes(canonical_ranges(&parse_list(bytes_raw)))
-    } else if !chars_raw.is_empty() {
-        Mode::Chars(canonical_ranges(&parse_list(chars_raw)))
-    } else if !fields_raw.is_empty() {
-        let delim_char = delim_str_raw.chars().next().unwrap_or('\t');
-        Mode::Fields {
-            ranges: canonical_ranges(&parse_list(fields_raw)),
-            delim_char,
-            delim_str: delim_str_raw.to_string(),
+    let bytes_ranges = if !bytes_raw.is_empty() {
+        match parse_list(bytes_raw) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("cut: {e}");
+                return 1;
+            }
         }
     } else {
+        None
+    };
+
+    let chars_ranges = if !chars_raw.is_empty() {
+        match parse_list(chars_raw) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("cut: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+
+    let fields_ranges = if !fields_raw.is_empty() {
+        match parse_list(fields_raw) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("cut: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut modes = 0;
+    if bytes_ranges.is_some() {
+        modes += 1;
+    }
+    if chars_ranges.is_some() {
+        modes += 1;
+    }
+    if fields_ranges.is_some() {
+        modes += 1;
+    }
+
+    if modes == 0 {
         eprintln!("cut: need to specify -b, -c or -f");
         return 1;
+    }
+    if modes > 1 {
+        eprintln!("cut: only one of -b, -c or -f may be specified");
+        return 1;
+    }
+
+    let mode = if let Some(r) = bytes_ranges {
+        Mode::Bytes(canonical_ranges(&r))
+    } else if let Some(r) = chars_ranges {
+        Mode::Chars(canonical_ranges(&r))
+    } else {
+        let r = fields_ranges.unwrap();
+        let delim_char = delim_str_raw.chars().next().unwrap_or('\t');
+        Mode::Fields {
+            ranges: canonical_ranges(&r),
+            delim_char,
+        }
     };
 
     // No cloning of the entire optargs vector — just borrow or use a single
@@ -89,7 +142,6 @@ enum Mode {
     Fields {
         ranges: Vec<(usize, usize)>,
         delim_char: char,
-        delim_str: String,
     },
 }
 
@@ -97,26 +149,54 @@ enum Mode {
 ///
 /// Each range is a pair `(start, end)` where both bounds are 1‑based and
 /// inclusive.  An open‑ended range like `7-` uses `usize::MAX` as the end.
-fn parse_list(s: &str) -> Vec<(usize, usize)> {
+/// The list can be separated by commas or blanks (whitespace).
+/// Returns an error if the list contains invalid elements (e.g. zero,
+/// non-numeric characters, or decreasing ranges).
+fn parse_list(s: &str) -> Result<Vec<(usize, usize)>, String> {
     let mut result = Vec::new();
-    for part in s.split(',') {
+    for part in s.split(|c: char| c == ',' || c.is_whitespace()) {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
         if let Some((a, b)) = part.split_once('-') {
-            let start = a.parse::<usize>().unwrap_or(1);
+            let start = if a.is_empty() {
+                1
+            } else {
+                let n = a
+                    .parse::<usize>()
+                    .map_err(|_| "invalid byte, character or field list".to_string())?;
+                if n == 0 {
+                    return Err("invalid byte, character or field list".to_string());
+                }
+                n
+            };
             let end = if b.is_empty() {
                 usize::MAX
             } else {
-                b.parse::<usize>().unwrap_or(usize::MAX)
+                let n = b
+                    .parse::<usize>()
+                    .map_err(|_| "invalid byte, character or field list".to_string())?;
+                if n == 0 {
+                    return Err("invalid byte, character or field list".to_string());
+                }
+                n
             };
+            if start > end {
+                return Err("invalid byte, character or field list".to_string());
+            }
             result.push((start, end));
-        } else if let Ok(n) = part.parse::<usize>() {
+        } else {
+            let n = part
+                .parse::<usize>()
+                .map_err(|_| "invalid byte, character or field list".to_string())?;
+            if n == 0 {
+                return Err("invalid byte, character or field list".to_string());
+            }
             result.push((n, n));
         }
     }
-    result
+    Ok(result)
 }
 
 /// Sort ranges and merge overlapping or directly adjacent ones.
@@ -235,18 +315,25 @@ fn cut_file(file: &str, mode: &Mode) -> Result<(), String> {
                 writer.write_all(b"\n").map_err(|e| e.to_string())?;
             }
         }
-        Mode::Fields {
-            ranges,
-            delim_char,
-            delim_str,
-        } => {
+        Mode::Fields { ranges, delim_char } => {
             for line in reader.lines() {
                 let line = line.map_err(|e| e.to_string())?;
-                let delim_bytes = delim_str.as_bytes();
                 out.clear();
+
+                // POSIX: "Lines with no field delimiters shall be passed through intact"
+                if !line.contains(*delim_char) {
+                    out.extend_from_slice(line.as_bytes());
+                    writer.write_all(&out).map_err(|e| e.to_string())?;
+                    writer.write_all(b"\n").map_err(|e| e.to_string())?;
+                    continue;
+                }
+
                 let mut range_iter = ranges.iter().copied().peekable();
                 let mut current: Option<(usize, usize)> = None;
                 let mut first_field = true;
+
+                let mut delim_buf = [0u8; 4];
+                let delim_bytes = delim_char.encode_utf8(&mut delim_buf).as_bytes();
 
                 for (idx_0, field) in line.split(*delim_char).enumerate() {
                     let idx_1 = idx_0 + 1;
