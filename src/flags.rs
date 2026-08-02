@@ -39,11 +39,13 @@ impl CommandFlags {
     pub const USR: CommandFlags = CommandFlags(1 << 8);
 
     /// Return the underlying `u32` bitmask.
+    #[inline]
     pub const fn bits(self) -> u32 {
         self.0
     }
 
     /// Return `true` if all flags in `other` are set.
+    #[inline]
     pub const fn contains(self, other: CommandFlags) -> bool {
         self.0 & other.0 == other.0
     }

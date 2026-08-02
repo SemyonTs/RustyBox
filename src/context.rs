@@ -8,8 +8,6 @@
 //
 // Implementation inspired by Toybox (https://landley.net/toybox/)
 // Toybox is copyrighted by Rob Landley, see NOTICE file for license details.
-//
-// Analogous to `struct toy_context` in toybox/toys.h:110.
 // =============================================================================
 
 use crate::registry::CommandDef;
@@ -35,18 +33,31 @@ pub struct Context {
 
 impl Context {
     /// Create a new context for the given command and argument vector.
+    /// Pre-allocates capacity for `optargs` to minimise reallocations
+    /// during argument parsing.
     pub fn new(which: &'static CommandDef, argv: Vec<String>) -> Self {
+        let cap = argv.len();
         Context {
             which,
             argv,
             optflags: 0,
-            optargs: Vec::new(),
+            optargs: Vec::with_capacity(cap),
             exitval: 0,
         }
     }
 
     /// Return `true` if the option at the given bit index is set.
+    /// Uses `wrapping_shl` to avoid undefined behaviour for out-of-range bits.
     pub fn has_opt(&self, bit: u32) -> bool {
-        self.optflags & (1u64 << bit) != 0
+        self.optflags & (1u64.wrapping_shl(bit)) != 0
+    }
+
+    /// Reset the context for another command invocation.
+    /// The `optargs` buffer is reused by clearing it, preserving capacity.
+    pub fn clear(&mut self, new_argv: Vec<String>) {
+        self.argv = new_argv;
+        self.optflags = 0;
+        self.optargs.clear();
+        self.exitval = 0;
     }
 }

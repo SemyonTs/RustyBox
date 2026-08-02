@@ -55,7 +55,7 @@ fn main() {
 
 /// Print the list of all registered commands (analogous to `rustybox --help`).
 fn print_help() {
-    println!("RustyBox {} — multicall binary", env!("CARGO_PKG_VERSION"));
+    println!("RustyBox {} — some common *nix command-line utilities", env!("CARGO_PKG_VERSION"));
     println!();
     println!("Available commands:");
     for cmd in registry::all() {
