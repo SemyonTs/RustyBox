@@ -12,10 +12,12 @@
 // Supported operators:
 //   Unary:  -e, -f, -d, -L, -h, -r, -w, -x, -s, -z, -n, -c, -b, -p, -S,
 //           -u, -g, -k, -O, -G.
-//   Binary: =, !=, -eq, -ne, -lt, -gt, -le, -ge, -nt, -ot.
+//   Binary: =, !=, -eq, -ne, -lt, -gt, -le, -ge, -nt, -ot, -ef.
 //   Logical: !, -a, -o, ( ).
 //
 // Also implements the `[` synonym, which requires a trailing `]`.
+// NOTE: test/[ does NOT use standard option parsing. All arguments are
+// positional tokens evaluated by a recursive-descent parser per POSIX.
 // =============================================================================
 
 use crate::context::Context;
@@ -27,48 +29,59 @@ use std::path::Path;
 
 /// Entry point for `test` / `[`.
 ///
-/// When invoked as `[` the last argument must be `]`.
+/// Unlike most builtins, test does not use args::parse because its syntax
+/// does not conform to POSIX Utility Syntax Guidelines. All argv elements
+/// after argv[0] are treated as positional expression tokens.
 fn test_main(ctx: &mut Context) -> u8 {
-    let name = ctx.which.name;
-    let len = ctx.optargs.len();
+    // Determine if we were invoked as "[" by checking argv[0] basename.
+    let argv0_base = ctx.argv[0].rsplit('/').next().unwrap_or(&ctx.argv[0]);
+    let is_bracket = argv0_base == "[";
 
-    if name == "[" {
-        if len > 0 && ctx.optargs[len - 1] == "]" {
-            // Evaluate all args except the trailing "]".
-            // No cloning — pass a slice.
-            if eval_expr(&ctx.optargs[..len - 1]) {
-                return 0;
-            } else {
-                return 1;
-            }
-        } else {
+    // Skip argv[0] (command name); everything else is expression tokens.
+    let args: Vec<&str> = ctx.argv[1..].iter().map(|s| s.as_str()).collect();
+
+    if is_bracket {
+        // POSIX: when invoked as "[", the last argument must be "]".
+        if args.is_empty() || *args.last().unwrap() != "]" {
             eprintln!("[: missing ']'");
             return 2;
         }
+        // Evaluate everything except the trailing "]".
+        let expr_args = &args[..args.len() - 1];
+        if eval_expr(expr_args) { 0 } else { 1 }
+    } else {
+        if eval_expr(&args) { 0 } else { 1 }
     }
-
-    if eval_expr(&ctx.optargs) { 0 } else { 1 }
 }
 
 /// Evaluate a complete expression from a list of tokens.
-fn eval_expr(args: &[String]) -> bool {
+fn eval_expr(args: &[&str]) -> bool {
+    if args.is_empty() {
+        return false;
+    }
     let mut parser = Parser { args, pos: 0 };
-    parser.parse_or()
+    let result = parser.parse_or();
+    // Per POSIX, if there are unconsumed tokens, results are unspecified.
+    // We treat leftover tokens as an error condition returning false.
+    if parser.pos < args.len() {
+        return false;
+    }
+    result
 }
 
 /// Recursive-descent parser for `test` expressions.
 struct Parser<'a> {
-    args: &'a [String],
+    args: &'a [&'a str],
     pos: usize,
 }
 
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<&'a str> {
-        self.args.get(self.pos).map(|s| s.as_str())
+        self.args.get(self.pos).copied()
     }
 
     fn next(&mut self) -> Option<&'a str> {
-        let r = self.args.get(self.pos).map(|s| s.as_str());
+        let r = self.args.get(self.pos).copied();
         if r.is_some() {
             self.pos += 1;
         }
@@ -80,24 +93,25 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_and();
         while self.peek() == Some("-o") {
             self.next();
-            left = left || self.parse_and();
+            let right = self.parse_and();
+            left = left || right;
         }
         left
     }
 
-    /// `-a` (logical AND).
+    /// `-a` (logical AND), higher precedence than -o.
     fn parse_and(&mut self) -> bool {
-        let mut left = self.parse_unary();
+        let mut left = self.parse_primary();
         while self.peek() == Some("-a") {
             self.next();
-            left = left && self.parse_unary();
+            let right = self.parse_primary();
+            left = left && right;
         }
         left
     }
 
-    /// Unary operators, parenthesised sub-expressions, bare strings, and
-    /// binary comparisons.
-    fn parse_unary(&mut self) -> bool {
+    /// Primary expressions: unary ops, binary ops, parens, negation, strings.
+    fn parse_primary(&mut self) -> bool {
         // Parenthesised sub-expression.
         if self.peek() == Some("(") {
             self.next();
@@ -111,30 +125,34 @@ impl<'a> Parser<'a> {
         // Negation.
         if self.peek() == Some("!") {
             self.next();
-            return !self.parse_unary();
+            return !self.parse_primary();
         }
 
-        // Unary operator: -X ARG.
+        // Try unary operator: -X ARG
         if let Some(tok) = self.peek() {
             if let Some(op) = tok.strip_prefix('-') {
                 if op.len() == 1 && is_unary(op) {
-                    self.next();
+                    self.next(); // consume operator
                     if let Some(arg) = self.next() {
                         return eval_unary(op, arg);
                     }
+                    // Unary op without argument: false
                     return false;
                 }
             }
         }
 
-        // Binary operator: ARG OP ARG.
-        if self.pos + 2 < self.args.len() {
-            let a = &self.args[self.pos];
-            let op = &self.args[self.pos + 1];
-            if is_binary(op) {
-                let b = &self.args[self.pos + 2];
-                self.pos += 3;
-                return eval_binary(a, op, b);
+        // Try binary operator: ARG OP ARG
+        // Look ahead to see if current token + next token form a binary expr.
+        if self.pos + 2 <= self.args.len() {
+            let a = self.args[self.pos];
+            if self.pos + 1 < self.args.len() {
+                let op = self.args[self.pos + 1];
+                if is_binary(op) && self.pos + 2 < self.args.len() {
+                    let b = self.args[self.pos + 2];
+                    self.pos += 3;
+                    return eval_binary(a, op, b);
+                }
             }
         }
 
@@ -177,7 +195,7 @@ fn is_unary(op: &str) -> bool {
 fn is_binary(op: &str) -> bool {
     matches!(
         op,
-        "=" | "!=" | "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge" | "-nt" | "-ot"
+        "=" | "!=" | "-eq" | "-ne" | "-lt" | "-gt" | "-le" | "-ge" | "-nt" | "-ot" | "-ef"
     )
 }
 
@@ -257,6 +275,14 @@ fn eval_binary(a: &str, op: &str, b: &str) -> bool {
             let mb = fs::metadata(b);
             match (ma, mb) {
                 (Ok(x), Ok(y)) => x.mtime() < y.mtime(),
+                _ => false,
+            }
+        }
+        "-ef" => {
+            let ma = fs::metadata(a);
+            let mb = fs::metadata(b);
+            match (ma, mb) {
+                (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
                 _ => false,
             }
         }
