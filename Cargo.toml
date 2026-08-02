@@ -1,6 +1,6 @@
 [package]
 name = "rustybox"
-version = "0.1.2"
+version = "0.1.3-alpha"
 edition = "2024"
 description = "Rust implementation of common *nix command-line utilities"
 license = "MPL-2.0"
