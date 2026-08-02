@@ -15,6 +15,8 @@
 //        (\n, \t, \r, \\).  Without -e the input is printed literally.
 // =============================================================================
 
+use std::io::Write;
+
 use crate::args::ParsedOpts;
 use crate::context::Context;
 use crate::flags::CommandFlags;
@@ -39,30 +41,45 @@ fn echo_main(ctx: &mut Context) -> u8 {
 
     let stdout = std::io::stdout();
     let mut writer = std::io::BufWriter::new(stdout.lock());
+    let mut ret: u8 = 0;
 
     // Write all arguments separated by a single space.
     for (i, arg) in ctx.optargs.iter().enumerate() {
         if i > 0 {
-            use std::io::Write;
-            writer.write_all(b" ").ok();
+            if writer.write_all(b" ").is_err() {
+                ret = 1;
+                break;
+            }
         }
         if interpret {
-            write_interpreted(&mut writer, arg);
+            if write_interpreted(&mut writer, arg).is_err() {
+                ret = 1;
+                break;
+            }
         } else {
-            use std::io::Write;
-            writer.write_all(arg.as_bytes()).ok();
+            if writer.write_all(arg.as_bytes()).is_err() {
+                ret = 1;
+                break;
+            }
         }
     }
 
-    if !no_newline {
-        use std::io::Write;
-        writer.write_all(b"\n").ok();
+    if ret == 0 {
+        if !no_newline {
+            if writer.write_all(b"\n").is_err() {
+                ret = 1;
+            }
+        }
+        if writer.flush().is_err() {
+            ret = 1;
+        }
+    } else {
+        // If we already failed, we still flush to avoid leaving the buffer
+        // in a broken state, but we ignore the result.
+        let _ = writer.flush();
     }
 
-    use std::io::Write;
-    writer.flush().ok();
-
-    0
+    ret
 }
 
 /// Write `s` to `writer`, expanding a limited set of C-style backslash escapes.
@@ -75,29 +92,30 @@ fn echo_main(ctx: &mut Context) -> u8 {
 ///
 /// An unrecognised escape character is reproduced literally (the backslash
 /// is preserved).
-fn write_interpreted(writer: &mut impl std::io::Write, s: &str) {
+fn write_interpreted(writer: &mut impl std::io::Write, s: &str) -> std::io::Result<()> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
             i += 1;
             let b = match bytes[i] {
-                b'n' => Some(b'\n'),
-                b't' => Some(b'\t'),
-                b'r' => Some(b'\r'),
-                b'\\' => Some(b'\\'),
-                _ => None,
+                b'n' => b'\n',
+                b't' => b'\t',
+                b'r' => b'\r',
+                b'\\' => b'\\',
+                _ => {
+                    writer.write_all(&[b'\\', bytes[i]])?;
+                    i += 1;
+                    continue;
+                }
             };
-            if let Some(escaped) = b {
-                writer.write_all(&[escaped]).ok();
-            } else {
-                writer.write_all(&[b'\\', bytes[i]]).ok();
-            }
+            writer.write_all(&[b])?;
         } else {
-            writer.write_all(&[bytes[i]]).ok();
+            writer.write_all(&[bytes[i]])?;
         }
         i += 1;
     }
+    Ok(())
 }
 
 register_command!(
