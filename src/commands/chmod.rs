@@ -45,8 +45,6 @@ fn chmod_main(ctx: &mut Context) -> u8 {
         return 1;
     }
 
-    // The first argument is the mode string; the remainder are file operands.
-    // Borrow instead of cloning the whole vector and removing.
     let mode_str = &ctx.optargs[0];
     let files = &ctx.optargs[1..];
 
@@ -99,7 +97,6 @@ fn chmod_one(
         }
     };
 
-    // Report the change if -v is given, or if -c is given and the mode differs.
     if flag_v || (flag_c && old != new_mode) {
         eprintln!(
             "mode of '{}' changed from {:04o} ({}) to {:04o} ({})",
@@ -114,7 +111,6 @@ fn chmod_one(
     fs::set_permissions(file, fs::Permissions::from_mode(new_mode))
         .map_err(|e| format!("'{file}': {e}"))?;
 
-    // Recurse into subdirectories when -R is set.
     if flag_R && meta.is_dir() {
         let rd = fs::read_dir(file).map_err(|e| format!("'{file}': {e}"))?;
         for item in rd {
@@ -122,7 +118,6 @@ fn chmod_one(
             let fname = entry.file_name();
             let name = fname.to_str().unwrap_or_default();
 
-            // Skip the self-referential directory entries.
             if name == "." || name == ".." {
                 continue;
             }
@@ -130,17 +125,12 @@ fn chmod_one(
             let path = entry.path();
             let meta2 = fs::symlink_metadata(&path).map_err(|e| format!("'{path:?}': {e}"))?;
 
-            // Do not descend into symlinks.
             if meta2.file_type().is_symlink() {
                 continue;
             }
 
-            // Reuse path as OsStr to avoid allocation when possible.
             let path_str = path.to_str().unwrap_or_default();
-            chmod_one(
-                path_str, mode, true, // recursion is always enabled for children
-                flag_v, flag_c, _flag_f,
-            )?;
+            chmod_one(path_str, mode, true, flag_v, flag_c, _flag_f)?;
         }
     }
 
@@ -173,13 +163,11 @@ struct Stanza {
 /// Parse a mode string that is either an octal number or a comma-separated
 /// list of symbolic stanzas.
 fn parse_mode(s: &str) -> Result<ModeSpec, String> {
-    // Octal mode: all characters must be valid octal digits.
     if s.chars().all(|c| c.is_digit(8)) && !s.is_empty() {
         let v = u32::from_str_radix(s, 8).map_err(|_| "octal number".to_string())?;
         return Ok(ModeSpec::Octal(v));
     }
 
-    // Symbolic mode: split on commas, each part is a stanza.
     let mut stanzas = Vec::new();
     for part in s.split(',') {
         if part.is_empty() {
@@ -202,7 +190,6 @@ fn parse_stanza(s: &str) -> Result<Stanza, String> {
     let mut i = 0;
     let mut who = 0u32;
 
-    // Collect who-specifier characters before the operator.
     while i < bytes.len() {
         match bytes[i] {
             'u' => who |= 1,
@@ -215,7 +202,6 @@ fn parse_stanza(s: &str) -> Result<Stanza, String> {
         i += 1;
     }
 
-    // Default who to "all" if no explicit class was given.
     if who == 0 {
         who = 7;
     }
@@ -230,7 +216,6 @@ fn parse_stanza(s: &str) -> Result<Stanza, String> {
     let mut perm = 0u32;
     let mut special = 0u32;
 
-    // Collect permission letters after the operator.
     while i < bytes.len() {
         match bytes[i] {
             'r' => perm |= 0o4,
@@ -238,10 +223,10 @@ fn parse_stanza(s: &str) -> Result<Stanza, String> {
             'x' => perm |= 0o1,
             's' => special |= 0o6000,
             't' => special |= 0o1000,
-            'u' => perm |= 0o700, // copy user bits
-            'g' => perm |= 0o070, // copy group bits
-            'o' => perm |= 0o007, // copy other bits
-            'X' => perm |= 0o111, // conditional execute (simplified: always sets x)
+            'u' => perm |= 0o700,
+            'g' => perm |= 0o070,
+            'o' => perm |= 0o007,
+            'X' => perm |= 0o111,
             _ => return Err(format!("unexpected character '{}'", bytes[i])),
         }
         i += 1;
@@ -256,51 +241,52 @@ fn parse_stanza(s: &str) -> Result<Stanza, String> {
 }
 
 /// Apply a single symbolic stanza to the current mode, returning the new mode.
-fn apply_stanza(current: u32, st: &Stanza, _is_dir: bool) -> u32 {
+fn apply_stanza(current: u32, st: &Stanza, is_dir: bool) -> u32 {
     let mut m = current;
 
-    // Handle special bits: setuid (04000), setgid (02000), sticky (01000).
+    // Apply special bits (setuid, setgid, sticky)
     if st.special != 0 {
-        let sval = st.special;
         for bit in 0..3 {
             if st.who & (1 << bit) != 0 {
-                if bit == 0 {
+                let special_bit = match bit {
+                    0 => 0o4000,
+                    1 => 0o2000,
+                    2 => 0o1000,
+                    _ => 0,
+                };
+
+                if st.special & special_bit != 0 {
                     m = match st.op {
-                        '+' => m | 0o4000,
-                        '-' => m & !0o4000,
-                        '=' => (m & !0o4000) | (sval & 0o4000),
-                        _ => m,
-                    };
-                } else if bit == 1 {
-                    m = match st.op {
-                        '+' => m | 0o2000,
-                        '-' => m & !0o2000,
-                        '=' => (m & !0o2000) | (sval & 0o2000),
+                        '+' => m | special_bit,
+                        '-' => m & !special_bit,
+                        '=' => (m & !special_bit) | special_bit,
                         _ => m,
                     };
                 }
             }
         }
-        // When who is "all" and operator is "=", replace all special bits.
-        if st.who == 7 && st.op == '=' {
-            m = (m & !0o7000) | (sval & 0o7000);
-        }
     }
 
-    // Handle standard permission bits (rwx) for user, group, and other.
+    // Handle standard permission bits (rwx) for each who class
     for bit in 0..3 {
         if st.who & (1 << bit) == 0 {
             continue;
         }
+
         let shift = (2 - bit) * 3;
-        let mask = 0o7 << shift;
-        let val = (st.perm & 0o7) << shift;
-        m = match st.op {
-            '+' => m | val,
-            '-' => m & !mask,
-            '=' => (m & !mask) | val,
-            _ => m,
-        };
+        let class_mask = 0o7 << shift;
+        let class_bits = (st.perm & 0o7) << shift;
+
+        match st.op {
+            '+' => m |= class_bits,
+            '-' => {
+                // Remove ONLY the specified permissions, not the entire class
+                let remove_mask = (st.perm & 0o7) << shift;
+                m &= !remove_mask;
+            }
+            '=' => m = (m & !class_mask) | class_bits,
+            _ => {}
+        }
     }
 
     m
