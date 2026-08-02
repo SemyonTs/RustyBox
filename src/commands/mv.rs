@@ -20,12 +20,10 @@
 use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::fs;
-use std::path::Path;
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
 
 /// Entry point for the `mv` builtin.
-///
-/// Attempts an atomic `rename(2)` first; falls back to copy-and-delete for
-/// cross-filesystem moves.
 fn mv_main(ctx: &mut Context) -> u8 {
     let opts = match crate::args::parse(ctx, "finTv") {
         Ok(o) => o,
@@ -43,22 +41,20 @@ fn mv_main(ctx: &mut Context) -> u8 {
 
     let n = ctx.optargs.len();
     if n < 2 {
-        eprintln!("mv: not enough arguments");
+        eprintln!("mv: missing operand");
         return 1;
     }
 
-    // Last argument is destination, all preceding are sources.
     let sources = &ctx.optargs[..n - 1];
     let dest = &ctx.optargs[n - 1];
 
     let mut exit_code: u8 = 0;
 
-    // Determine whether the destination is an existing directory (unless -T
-    // forces file semantics).
+    // Determine if destination is an existing directory.
+    // fs::metadata follows symlinks, which matches POSIX behavior for target_dir.
     let dest_is_dir =
         !flag_T && (sources.len() > 1 || fs::metadata(dest).map(|m| m.is_dir()).unwrap_or(false));
 
-    // Pre-allocate reusable buffer for destination path construction.
     let mut target_buf = String::with_capacity(256);
 
     for src in sources {
@@ -73,7 +69,7 @@ fn mv_main(ctx: &mut Context) -> u8 {
             }
         } else {
             target_buf.push_str(dest);
-        };
+        }
 
         if let Err(e) = move_one(src, &target_buf, flag_f, flag_i, flag_n, flag_v) {
             eprintln!("mv: {e}");
@@ -85,11 +81,6 @@ fn mv_main(ctx: &mut Context) -> u8 {
 }
 
 /// Move a single filesystem entry from `src` to `dest`.
-///
-/// If the destination exists and is a directory while the source is not, the
-/// operation is redirected into that directory.  The move is first attempted
-/// via `rename(2)`; on cross-device errors a byte-for-byte copy followed by
-/// removal of the source is used as a fallback.
 fn move_one(
     src: &str,
     dest: &str,
@@ -98,43 +89,46 @@ fn move_one(
     flag_n: bool,
     flag_v: bool,
 ) -> Result<(), String> {
-    // Resolve destination-directory redirection.
-    if let Ok(dmeta) = fs::symlink_metadata(dest) {
-        if dmeta.is_dir() && !Path::new(src).is_dir() {
-            let base = Path::new(src)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(src);
-            let new_dest = Path::new(dest).join(base);
-            return move_one(
-                src,
-                new_dest.to_str().unwrap_or_default(),
-                flag_f,
-                flag_i,
-                flag_n,
-                flag_v,
-            );
-        }
+    let src_path = Path::new(src);
+    let dest_path = Path::new(dest);
 
-        // -n: no-clobber.
+    let src_is_dir = src_path.is_dir();
+    let dest_exists = dest_path.exists() || dest_path.symlink_metadata().is_ok();
+
+    // POSIX: if source is a non-directory and target ends with a slash, it's an error.
+    if !src_is_dir && dest.ends_with('/') {
+        return Err(format!("cannot move '{}' to a directory", src));
+    }
+
+    // POSIX: if dest is a directory and source is not, it's an error
+    // (Note: mv_main already handles appending basename if dest is a dir,
+    // so this catches the case where the constructed dest path happens to be an existing dir).
+    if dest_exists && dest_path.is_dir() && !src_is_dir {
+        return Err(format!(
+            "cannot overwrite directory '{}' with non-directory '{}'",
+            dest, src
+        ));
+    }
+
+    if dest_exists {
         if flag_n {
-            return Ok(());
+            return Ok(()); // No-clobber
         }
 
-        // -i: interactive prompt.
         if flag_i {
             eprint!("mv: overwrite '{}'? ", dest);
             let mut buf = String::new();
             std::io::stdin().read_line(&mut buf).ok();
-            if !buf.trim().starts_with('y') {
+            if !buf.trim().to_lowercase().starts_with('y') {
                 return Ok(());
             }
         }
 
-        // -f: forcibly remove the existing destination.
         if flag_f {
+            // Safely remove only the specific file or symlink.
+            // Do NOT use remove_dir_all here, as it would destroy directory contents.
+            // If it's a non-empty directory, rename() will fail later, which is correct POSIX behavior.
             let _ = fs::remove_file(dest);
-            let _ = fs::remove_dir_all(dest);
         }
     }
 
@@ -142,17 +136,55 @@ fn move_one(
         eprintln!("renamed '{}' -> '{}'", src, dest);
     }
 
-    // Fast path: atomic rename (works when both paths reside on the same
-    // filesystem).
+    // Fast path: atomic rename (same filesystem)
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(_) => {
-            // Cross-filesystem fallback: copy then delete the source.
-            fs::copy(src, dest).map_err(|e| format!("'{}': {}", dest, e))?;
-            fs::remove_file(src).map_err(|e| format!("'{}': {}", src, e))?;
+            // Cross-filesystem fallback: duplicate hierarchy, then remove source.
+            copy_hierarchy(src_path, dest_path)?;
+
+            // Remove original source
+            if src_is_dir {
+                fs::remove_dir_all(src)
+                    .map_err(|e| format!("failed to remove source dir '{}': {}", src, e))?;
+            } else {
+                fs::remove_file(src)
+                    .map_err(|e| format!("failed to remove source '{}': {}", src, e))?;
+            }
             Ok(())
         }
     }
+}
+
+/// Recursively copy a file hierarchy, preserving symlinks as symlinks (POSIX requirement).
+fn copy_hierarchy(src: &Path, dest: &Path) -> Result<(), String> {
+    let meta =
+        fs::symlink_metadata(src).map_err(|e| format!("cannot stat '{}': {}", src.display(), e))?;
+
+    if meta.file_type().is_symlink() {
+        let target = fs::read_link(src)
+            .map_err(|e| format!("cannot read symlink '{}': {}", src.display(), e))?;
+        symlink(target, dest)
+            .map_err(|e| format!("cannot create symlink '{}': {}", dest.display(), e))?;
+    } else if meta.is_dir() {
+        fs::create_dir_all(dest)
+            .map_err(|e| format!("cannot create directory '{}': {}", dest.display(), e))?;
+        for entry in
+            fs::read_dir(src).map_err(|e| format!("cannot read dir '{}': {}", src.display(), e))?
+        {
+            let entry = entry.map_err(|e| format!("cannot read dir entry: {}", e))?;
+            copy_hierarchy(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+    } else {
+        fs::copy(src, dest).map_err(|e| format!("cannot copy file '{}': {}", src.display(), e))?;
+    }
+
+    // Optional: preserve basic metadata (timestamps, permissions)
+    if let Ok(meta) = fs::metadata(src) {
+        let _ = fs::set_permissions(dest, meta.permissions());
+    }
+
+    Ok(())
 }
 
 register_command!(MV_CMD, "mv", "finTv", CommandFlags::BIN.bits(), mv_main);
