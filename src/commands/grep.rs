@@ -10,15 +10,19 @@
 // Toybox is copyrighted by Rob Landley, see NOTICE file for license details.
 //
 // Supported options:
-//   -E         Interpret patterns as extended regular expressions (default).
+//   -E         Interpret patterns as extended regular expressions.
 //   -F         Interpret patterns as fixed strings (literal match).
+//   -P         Interpret patterns as Perl-compatible regular expressions.
+//              Enables Unicode property escapes (\p{...}) and \x{NNNN}.
 //   -i         Case-insensitive matching.
 //   -v         Invert match: select non-matching lines.
 //   -n         Prefix each output line with its 1-based line number.
 //   -r, -R     Recursively search directories.
 //   -c         Print only a count of matching lines per file.
 //   -l         Print only the names of files containing at least one match.
+//   -L         Print only the names of files containing no match.
 //   -q         Quiet: suppress all normal output; exit immediately on first match.
+//   -s         Suppress error messages for nonexistent or unreadable files.
 //   -w         Match whole words only.
 //   -x         Match whole lines only (anchored at both ends).
 //   -e PATTERN Use PATTERN as the pattern (may be repeated).
@@ -40,7 +44,8 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 ///   1 — no matches were found.
 ///   2 — an error occurred (syntax error in the pattern, etc.).
 fn grep_main(ctx: &mut Context) -> u8 {
-    let opts = match crate::args::parse(ctx, "EFivnrclqwxe:f:hH") {
+    // [EFP] enforces mutual exclusivity between -E, -F, and -P.
+    let opts = match crate::args::parse(ctx, "EFivnrclLqwxe:f:hHsP[EFP]") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("grep: {e}");
@@ -48,31 +53,50 @@ fn grep_main(ctx: &mut Context) -> u8 {
         }
     };
 
-    // -E is recognised but is the default behaviour; the flag variable is
-    // retained for compatibility with option-string parsing.
-    let _flag_E = opts.count('E') > 0;
+    let flag_E = opts.count('E') > 0;
     let flag_F = opts.count('F') > 0;
+    let flag_P = opts.count('P') > 0;
     let flag_i = opts.count('i') > 0;
     let flag_v = opts.count('v') > 0;
     let flag_n = opts.count('n') > 0;
     let flag_r = opts.count('r') > 0 || opts.count('R') > 0;
     let flag_c = opts.count('c') > 0;
     let flag_l = opts.count('l') > 0;
+    let flag_L = opts.count('L') > 0;
     let flag_q = opts.count('q') > 0;
+    let flag_s = opts.count('s') > 0;
     let flag_w = opts.count('w') > 0;
     let flag_x = opts.count('x') > 0;
     let flag_h = opts.count('h') > 0;
     let flag_H = opts.count('H') > 0;
 
-    // Compile patterns directly into Regex objects – no intermediate String storage.
+    // Compile patterns directly into Regex objects.
     let mut regexes: Vec<Regex> = Vec::new();
+    // POSIX: a null (empty) pattern matches every line.
+    let mut has_empty_pattern = false;
 
     // Helper to compile a pattern string with flags applied.
     let compile_pattern = |raw: &str| -> Result<Regex, String> {
         let re_str = if flag_F {
             regex::escape(raw)
+        } else if flag_P {
+            // -P mode: pass pattern directly to regex crate.
+            // The regex crate natively supports PCRE-like syntax including
+            // \x{NNNN}, \p{Cyrillic}, \d, \w, etc.
+            let mut s = raw.to_string();
+            if flag_w {
+                s = format!(r"\b{}\b", s);
+            }
+            if flag_x {
+                s = format!("^(?:{})$", s);
+            }
+            s
         } else {
             let mut s = raw.to_string();
+            // When neither -E nor -F nor -P is given, treat the pattern as BRE.
+            if !flag_E {
+                s = bre_to_ere(&s);
+            }
             if flag_w {
                 s = format!(r"\b{}\b", s);
             }
@@ -93,7 +117,9 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     // Collect patterns from repeated -e options.
     for pat in opts.get_strs('e') {
-        if !pat.is_empty() {
+        if pat.is_empty() {
+            has_empty_pattern = true;
+        } else {
             match compile_pattern(pat) {
                 Ok(re) => regexes.push(re),
                 Err(msg) => {
@@ -109,7 +135,9 @@ fn grep_main(ctx: &mut Context) -> u8 {
         let file = match File::open(f) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("grep: cannot open '{}': {}", f, e);
+                if !flag_q && !flag_s {
+                    eprintln!("grep: cannot open '{}': {}", f, e);
+                }
                 return 2;
             }
         };
@@ -118,12 +146,16 @@ fn grep_main(ctx: &mut Context) -> u8 {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("grep: error reading '{}': {}", f, e);
+                    if !flag_q && !flag_s {
+                        eprintln!("grep: error reading '{}': {}", f, e);
+                    }
                     return 2;
                 }
             };
             if line.is_empty() {
-                continue; // skip empty patterns? Toybox does this.
+                // Empty line in a pattern file represents a null pattern.
+                has_empty_pattern = true;
+                continue;
             }
             match compile_pattern(&line) {
                 Ok(re) => regexes.push(re),
@@ -137,7 +169,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     // If no -e/-f were given, the first positional argument is the pattern.
     let mut args_iter = ctx.optargs.iter().map(|s| s.as_str());
-    if regexes.is_empty() {
+    if regexes.is_empty() && !has_empty_pattern {
         let pattern = match args_iter.next() {
             Some(p) => p,
             None => {
@@ -173,11 +205,14 @@ fn grep_main(ctx: &mut Context) -> u8 {
             let result = grep_recursive(
                 file,
                 &regexes,
+                has_empty_pattern,
                 flag_v,
                 flag_n,
                 flag_c,
                 flag_l,
+                flag_L,
                 flag_q,
+                flag_s,
                 flag_h,
                 flag_H,
                 multiple,
@@ -187,7 +222,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
             );
             match result {
                 Err(e) => {
-                    if !flag_q {
+                    if !flag_q && !flag_s {
                         eprintln!("grep: {e}");
                     }
                     has_error = true;
@@ -203,11 +238,14 @@ fn grep_main(ctx: &mut Context) -> u8 {
             match grep_file(
                 file,
                 &regexes,
+                has_empty_pattern,
                 flag_v,
                 flag_n,
                 flag_c,
                 flag_l,
+                flag_L,
                 flag_q,
+                flag_s,
                 flag_h,
                 flag_H,
                 multiple,
@@ -219,7 +257,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
                     }
                 }
                 Err(e) => {
-                    if !flag_q {
+                    if !flag_q && !flag_s {
                         eprintln!("grep: {e}");
                     }
                     has_error = true;
@@ -252,11 +290,14 @@ fn grep_main(ctx: &mut Context) -> u8 {
 fn grep_recursive(
     dir: &str,
     regexes: &[Regex],
+    has_empty_pattern: bool,
     flag_v: bool,
     flag_n: bool,
     flag_c: bool,
     flag_l: bool,
+    flag_L: bool,
     flag_q: bool,
+    flag_s: bool,
     flag_h: bool,
     flag_H: bool,
     multiple: bool,
@@ -266,7 +307,12 @@ fn grep_recursive(
 ) -> Result<bool, String> {
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
-        Err(e) => return Err(format!("'{dir}': {e}")),
+        Err(e) => {
+            if flag_s {
+                return Ok(false);
+            }
+            return Err(format!("'{dir}': {e}"));
+        }
     };
 
     for item in rd {
@@ -284,8 +330,22 @@ fn grep_recursive(
             // Recurse into subdirectory.
             let sub_path = path.to_str().unwrap_or_default();
             let early = grep_recursive(
-                sub_path, regexes, flag_v, flag_n, flag_c, flag_l, flag_q, flag_h, flag_H,
-                multiple, writer, found_any, has_error,
+                sub_path,
+                regexes,
+                has_empty_pattern,
+                flag_v,
+                flag_n,
+                flag_c,
+                flag_l,
+                flag_L,
+                flag_q,
+                flag_s,
+                flag_h,
+                flag_H,
+                multiple,
+                writer,
+                found_any,
+                has_error,
             )?;
             if early {
                 return Ok(true);
@@ -293,8 +353,20 @@ fn grep_recursive(
         } else if meta.is_file() {
             let file_path = path.to_str().unwrap_or_default();
             match grep_file(
-                file_path, regexes, flag_v, flag_n, flag_c, flag_l, flag_q, flag_h, flag_H,
-                multiple, writer,
+                file_path,
+                regexes,
+                has_empty_pattern,
+                flag_v,
+                flag_n,
+                flag_c,
+                flag_l,
+                flag_L,
+                flag_q,
+                flag_s,
+                flag_h,
+                flag_H,
+                multiple,
+                writer,
             ) {
                 Ok(found) => {
                     if found {
@@ -302,7 +374,7 @@ fn grep_recursive(
                     }
                 }
                 Err(e) => {
-                    if !flag_q {
+                    if !flag_q && !flag_s {
                         eprintln!("grep: {e}");
                     }
                     *has_error = true;
@@ -326,11 +398,14 @@ fn grep_recursive(
 fn grep_file(
     file: &str,
     regexes: &[Regex],
+    has_empty_pattern: bool,
     flag_v: bool,
     flag_n: bool,
     flag_c: bool,
     flag_l: bool,
+    flag_L: bool,
     flag_q: bool,
+    flag_s: bool,
     flag_h: bool,
     flag_H: bool,
     multiple: bool,
@@ -339,8 +414,15 @@ fn grep_file(
     let mut reader: Box<dyn BufRead> = if file == "-" {
         Box::new(std::io::stdin().lock())
     } else {
-        let f = File::open(file).map_err(|e| format!("'{file}': {e}"))?;
-        Box::new(BufReader::new(f))
+        match File::open(file) {
+            Ok(f) => Box::new(BufReader::new(f)),
+            Err(e) => {
+                if flag_s {
+                    return Ok(false);
+                }
+                return Err(format!("'{file}': {e}"));
+            }
+        }
     };
 
     let mut count = 0u64;
@@ -366,7 +448,7 @@ fn grep_file(
             &line_buf[..]
         };
 
-        let matched = regexes.iter().any(|r| r.is_match(line));
+        let matched = has_empty_pattern || regexes.iter().any(|r| r.is_match(line));
         let is_match = if flag_v { !matched } else { matched };
 
         if is_match {
@@ -380,6 +462,12 @@ fn grep_file(
             if flag_l {
                 writeln!(writer, "{}", file).map_err(|e| e.to_string())?;
                 return Ok(true);
+            }
+
+            // When -L is active, suppress normal output; the filename will be
+            // printed only if no match was found throughout the entire file.
+            if flag_L {
+                continue;
             }
 
             if flag_c {
@@ -411,13 +499,66 @@ fn grep_file(
         return Ok(count > 0);
     }
 
+    // -L: print filenames that contain no matching lines.
+    if flag_L && !found {
+        writeln!(writer, "{}", file).map_err(|e| e.to_string())?;
+    }
+
     Ok(found)
+}
+
+/// Simplified conversion from POSIX Basic Regular Expression (BRE) syntax
+/// to Extended Regular Expression (ERE) syntax used by the `regex` crate.
+///
+/// This handles the most common differences: backslash‑escaped `?+{|}()`
+/// become the corresponding ERE metacharacters, and unescaped occurrences
+/// of those characters are backslash‑escaped so they are treated as literals.
+fn bre_to_ere(bre: &str) -> String {
+    let mut result = String::with_capacity(bre.len());
+    let mut chars = bre.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(&next) = chars.peek() {
+                    match next {
+                        '?' | '+' | '{' | '}' | '|' | '(' | ')' => {
+                            // In BRE: \?, \+, \{, \}, \|, \(, \) have special meaning.
+                            // In ERE the same meaning is conveyed by the unescaped character.
+                            result.push(next);
+                            chars.next();
+                        }
+                        _ => {
+                            // Other backslash sequences (e.g., \., \*, \\, \1) are kept as-is.
+                            result.push('\\');
+                            result.push(next);
+                            chars.next();
+                        }
+                    }
+                } else {
+                    // Trailing backslash – pass through (invalid BRE, but let regex crate catch it).
+                    result.push('\\');
+                }
+            }
+            // In BRE the characters ?+{}|() are ordinary literals.
+            // In ERE they are metacharacters, so they must be escaped.
+            '?' | '+' | '{' | '}' | '|' | '(' | ')' => {
+                result.push('\\');
+                result.push(c);
+            }
+            _ => {
+                result.push(c);
+            }
+        }
+    }
+
+    result
 }
 
 register_command!(
     GREP_CMD,
     "grep",
-    "EFivnrclqwxe:f:hH",
+    "EFivnrclLqwxe:f:hHsP[EFP]",
     CommandFlags::BIN.bits(),
     grep_main
 );
