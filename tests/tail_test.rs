@@ -187,3 +187,24 @@ fn tail_multiple_files_default_headers() {
 fn tail_nonexistent_file() {
     rb(&["tail", "/nonexistent"]).assert().failure().code(1);
 }
+
+#[test]
+fn tail_lines_negative() {
+    let content = (1..=10).map(|i| format!("line {i}\n")).collect::<String>();
+    let (_dir, path) = temp_file_with(&content);
+    rb(&["tail", "-n", "-3", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("line 8\nline 9\nline 10\n"));
+}
+
+#[test]
+fn tail_bytes_negative() {
+    let (_dir, path) = temp_file_with("hello world\n");
+    rb(&["tail", "-c", "-5", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("orld\n"));
+}
+
+// tail -f must not be tested.

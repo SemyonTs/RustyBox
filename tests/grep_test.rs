@@ -228,3 +228,57 @@ fn grep_multiple_files() {
     .success()
     .stdout(predicate::eq(format!("{}:one\n", path1.to_str().unwrap())));
 }
+
+#[test]
+fn grep_extended_regex() {
+    let (_dir, path) = temp_file_with("foo\nbar\n");
+    rb(&["grep", "-E", "f.+", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("foo\n"));
+}
+
+#[test]
+fn grep_count_with_multiple_files() {
+    let (_dir1, path1) = temp_file_with("match\n");
+    let (_dir2, path2) = temp_file_with("match\nmatch\n");
+    rb(&[
+        "grep",
+        "-c",
+        "match",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::eq(format!(
+        "{}:1\n{}:2\n",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap()
+    )));
+}
+
+#[test]
+fn grep_files_without_match() {
+    let (_dir1, path1) = temp_file_with("match\n");
+    let (_dir2, path2) = temp_file_with("no\n");
+    rb(&[
+        "grep",
+        "-L",
+        "match",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::eq(format!("{}\n", path2.to_str().unwrap())));
+}
+
+#[test]
+fn grep_suppress_errors() {
+    rb(&["grep", "-s", "pattern", "/nonexistent"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::eq(""));
+}

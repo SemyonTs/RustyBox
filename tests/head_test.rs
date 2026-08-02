@@ -183,3 +183,31 @@ fn head_stdin_bytes() {
         .success()
         .stdout(predicate::eq("hello"));
 }
+
+#[test]
+fn head_lines_negative() {
+    let content = (1..=10).map(|i| format!("line {i}\n")).collect::<String>();
+    let (_dir, path) = temp_file_with(&content);
+    rb(&["head", "-n", "-3", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| out.lines().count() == 7));
+}
+
+#[test]
+fn head_bytes_negative() {
+    let (_dir, path) = temp_file_with("hello world\n");
+    rb(&["head", "-c", "-5", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("hello w")); // 12 bytes - 5 = 7 bytes
+}
+
+#[test]
+fn head_conflicting_options() {
+    rb(&["head", "-c", "5", "-n", "2"])
+        .write_stdin("a\nb\nc\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("a\nb\n"));
+}

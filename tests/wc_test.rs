@@ -8,6 +8,8 @@ use rstest::rstest;
 
 use common::{rb, temp_file_with};
 
+use crate::common::temp_dir;
+
 #[test]
 fn wc_default_counts() {
     let (_dir, path) = temp_file_with("hello world\ntest line\n");
@@ -105,4 +107,45 @@ fn wc_empty_file() {
         .assert()
         .success()
         .stdout(predicate::eq("      0       0       0 \n"));
+}
+
+#[test]
+fn wc_characters_multibyte() {
+    let (_dir, path) = temp_file_with("αβγ\n");
+    rb(&["wc", "-m", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("      4 \n"));
+}
+
+#[test]
+fn wc_bytes_vs_characters() {
+    // POSIX: -c and -m are mutually exclusive.
+    // Using both should result in an error.
+    let dir = temp_dir();
+    let path = dir.path().join("test.txt");
+    std::fs::write(&path, "test\n").unwrap();
+
+    rb(&["wc", "-c", "-m", path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("mutually exclusive"));
+}
+#[test]
+fn wc_total_for_mixed_options() {
+    let (_dir1, path1) = temp_file_with("a\nb\n");
+    let (_dir2, path2) = temp_file_with("c\nd\ne\n");
+    rb(&[
+        "wc",
+        "-lw",
+        path1.to_str().unwrap(),
+        path2.to_str().unwrap(),
+    ])
+    .assert()
+    .success()
+    .stdout(predicate::function(|out: &str| {
+        let lines: Vec<&str> = out.lines().collect();
+        lines.len() == 3 && lines[2].contains("total")
+    }));
 }

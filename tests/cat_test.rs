@@ -149,3 +149,41 @@ fn cat_stdin_dash_with_options() {
         .success()
         .stdout(predicate::eq(b"^A\n".to_vec()));
 }
+
+#[test]
+fn cat_multiple_files_with_stdin_dash() {
+    let (_dir1, path1) = temp_file_with("file1\n");
+    let (_dir2, path2) = temp_file_with("file2\n");
+    rb(&["cat", path1.to_str().unwrap(), "-", path2.to_str().unwrap()])
+        .write_stdin("stdin\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("file1\nstdin\nfile2\n"));
+}
+
+#[test]
+fn cat_visualize_tab_and_newline() {
+    rb(&["cat", "-et"])
+        .write_stdin("\t\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("^I$\n"));
+}
+
+#[test]
+fn cat_visualize_nonprinting_without_newline() {
+    rb(&["cat", "-v"])
+        .write_stdin(b"\x1b")
+        .assert()
+        .success()
+        .stdout(predicate::eq(b"^[".to_vec()));
+}
+
+#[test]
+fn cat_unbuffered_with_multiple_files() {
+    let (_dir, path) = temp_file_with("hello\n");
+    rb(&["cat", "-u", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::eq("hello\n"));
+}
