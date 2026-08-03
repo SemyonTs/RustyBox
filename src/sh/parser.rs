@@ -342,7 +342,10 @@ pub fn find_matching_brace(input: &str, start: usize) -> Option<usize> {
 // valid identifier name.  This prevents false positives on compound commands
 // that happen to contain braces.  Trailing comments are allowed.
 // -----------------------------------------------------------------------------
-pub fn try_parse_function_def(input: &str, is_valid_identifier: fn(&str) -> bool) -> Option<(String, String)> {
+pub fn try_parse_function_def(
+    input: &str,
+    is_valid_identifier: fn(&str) -> bool,
+) -> Option<(String, String)> {
     let trimmed = input.trim();
     let bytes = trimmed.as_bytes();
     let len = bytes.len();
@@ -603,7 +606,16 @@ pub fn find_closing_paren(input: &str, start: usize) -> Option<usize> {
 // -----------------------------------------------------------------------------
 pub fn parse_redirections_tokens(
     tokens: Vec<Token>,
-) -> Result<(Vec<Token>, Option<Token>, Option<Token>, bool, Option<Token>), String> {
+) -> Result<
+    (
+        Vec<Token>,
+        Option<Token>,
+        Option<Token>,
+        bool,
+        Option<Token>,
+    ),
+    String,
+> {
     let mut stdin_file = None;
     let mut stdout_file = None;
     let mut append = false;

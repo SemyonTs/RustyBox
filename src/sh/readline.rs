@@ -5,12 +5,12 @@
 use crate::sh::expansion::expand_tilde_one;
 use crate::sh::globals::*;
 use crate::sh::parser::tokenize_to_strings;
+use rustyline::Helper;
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hinter, HistoryHinter};
 use rustyline::validate::{ValidationResult, Validator};
-use rustyline::Helper;
 use std::borrow::Cow;
 use std::env;
 use std::ffi::CStr;

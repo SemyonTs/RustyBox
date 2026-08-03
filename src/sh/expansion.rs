@@ -3,15 +3,15 @@
 // expansion.  Each phase respects POSIX quoting semantics.
 // =============================================================================
 use crate::sh::globals::*;
-use crate::sh::parser::{find_closing_paren, Token};
+use crate::sh::parser::{Token, find_closing_paren};
 use crate::sh::signals::{acquire_child_slot, release_child_slot};
-use std::sync::atomic::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::CStr;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 // Forward declaration of exec entry points used by command substitution.
 // These are implemented in crate::sh::exec.
@@ -79,9 +79,9 @@ pub fn expand_tilde_struct(tokens: Vec<Token>) -> Vec<Token> {
 }
 
 pub fn expand_tilde(tokens: Vec<String>) -> Vec<String> {
-    crate::sh::parser::tokens_to_strings(expand_tilde_struct(
-        crate::sh::parser::strings_to_tokens(tokens),
-    ))
+    crate::sh::parser::tokens_to_strings(expand_tilde_struct(crate::sh::parser::strings_to_tokens(
+        tokens,
+    )))
 }
 
 pub fn expand_tilde_one(s: &str) -> String {
@@ -161,11 +161,7 @@ pub fn lookup_user_home(user: &str) -> Option<String> {
     let dir = unsafe { CStr::from_ptr(dir_ptr) }
         .to_string_lossy()
         .into_owned();
-    if dir.is_empty() {
-        None
-    } else {
-        Some(dir)
-    }
+    if dir.is_empty() { None } else { Some(dir) }
 }
 
 // -----------------------------------------------------------------------------
@@ -690,9 +686,9 @@ pub fn expand_globs_struct(tokens: Vec<Token>) -> Vec<Token> {
 }
 
 pub fn expand_globs(tokens: Vec<String>) -> Vec<String> {
-    crate::sh::parser::tokens_to_strings(expand_globs_struct(
-        crate::sh::parser::strings_to_tokens(tokens),
-    ))
+    crate::sh::parser::tokens_to_strings(expand_globs_struct(crate::sh::parser::strings_to_tokens(
+        tokens,
+    )))
 }
 
 pub fn glob(pattern: &str) -> io::Result<Vec<String>> {
@@ -751,8 +747,7 @@ pub fn matches_pattern(name: &str, pattern: &str) -> bool {
             star = Some(pi);
             match_start = ni;
             pi += 1;
-        } else if pi < pat_bytes.len()
-            && (pat_bytes[pi] == b'?' || pat_bytes[pi] == name_bytes[ni])
+        } else if pi < pat_bytes.len() && (pat_bytes[pi] == b'?' || pat_bytes[pi] == name_bytes[ni])
         {
             ni += 1;
             pi += 1;

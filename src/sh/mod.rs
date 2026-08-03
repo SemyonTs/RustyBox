@@ -1,20 +1,20 @@
-pub mod globals;
-pub mod signals;
-pub mod parser;
-pub mod expansion;
-pub mod exec;
 pub mod builtins;
+pub mod exec;
+pub mod expansion;
+pub mod globals;
+pub mod parser;
 pub mod readline;
 pub mod script;
+pub mod signals;
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
-use crate::{register_command, registry};
-use crate::sh::globals::*;
-use crate::sh::signals::{setup_signal_handlers, setup_nproc_limit};
-use crate::sh::readline::{make_prompt, PathCache, ShHelper, ShellOpts};
 use crate::sh::exec::{reap_background, run_command_list};
+use crate::sh::globals::*;
+use crate::sh::readline::{PathCache, ShHelper, ShellOpts, make_prompt};
 use crate::sh::script::{execute_script, parse_shell_arguments};
+use crate::sh::signals::{setup_nproc_limit, setup_signal_handlers};
+use crate::{register_command, registry};
 
 use rustyline::completion::FilenameCompleter;
 use rustyline::error::ReadlineError;
@@ -308,7 +308,6 @@ fn sh_main(ctx: &mut Context) -> u8 {
         state.last_status
     }
 }
-
 
 register_command!(
     SH_CMD,

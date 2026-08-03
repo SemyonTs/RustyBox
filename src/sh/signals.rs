@@ -49,8 +49,13 @@ pub fn setup_nproc_limit() {
 pub fn acquire_child_slot() -> bool {
     loop {
         let current = ACTIVE_CHILDREN.load(Ordering::SeqCst);
-        if current >= MAX_CHILD_PROCESSES { return false; }
-        if ACTIVE_CHILDREN.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        if current >= MAX_CHILD_PROCESSES {
+            return false;
+        }
+        if ACTIVE_CHILDREN
+            .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             return true;
         }
     }
@@ -59,8 +64,13 @@ pub fn acquire_child_slot() -> bool {
 pub fn release_child_slot() {
     loop {
         let current = ACTIVE_CHILDREN.load(Ordering::SeqCst);
-        if current == 0 { return; }
-        if ACTIVE_CHILDREN.compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        if current == 0 {
+            return;
+        }
+        if ACTIVE_CHILDREN
+            .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             return;
         }
     }

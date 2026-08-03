@@ -61,7 +61,9 @@ impl ShellState {
             last_status: 0,
             script_name: "sh".to_string(),
             positional_params: Vec::new(),
-            pipefail: env::var("SHELLOPTS").unwrap_or_default().contains("pipefail"),
+            pipefail: env::var("SHELLOPTS")
+                .unwrap_or_default()
+                .contains("pipefail"),
             exit_requested: false,
             exit_code: 0,
             last_bg_pid: None,
@@ -75,7 +77,10 @@ pub fn safe_cstring(s: &str) -> Option<CString> {
 }
 
 pub fn build_argv(tokens: &[String]) -> Option<(Vec<CString>, Vec<*const libc::c_char>)> {
-    let cstrings: Vec<CString> = tokens.iter().map(|s| safe_cstring(s)).collect::<Option<Vec<_>>>()?;
+    let cstrings: Vec<CString> = tokens
+        .iter()
+        .map(|s| safe_cstring(s))
+        .collect::<Option<Vec<_>>>()?;
     let ptrs: Vec<*const libc::c_char> = cstrings
         .iter()
         .map(|s| s.as_ptr())
@@ -92,7 +97,9 @@ pub fn push_char_at(s: &str, buf: &mut String, i: &mut usize) {
 }
 
 pub fn is_valid_identifier(s: &str) -> bool {
-    if s.is_empty() { return false; }
+    if s.is_empty() {
+        return false;
+    }
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}

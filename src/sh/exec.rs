@@ -7,14 +7,13 @@ use crate::sh::expansion::*;
 use crate::sh::globals::*;
 use crate::sh::parser::*;
 use crate::sh::signals::{acquire_child_slot, release_child_slot};
-use std::sync::atomic::Ordering;
 use std::collections::HashMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{IntoRawFd, RawFd};
-
+use std::sync::atomic::Ordering;
 
 // -----------------------------------------------------------------------------
 // Command list execution.  Recursive depth is limited to prevent stack
