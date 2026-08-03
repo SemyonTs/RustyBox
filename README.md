@@ -1,5 +1,9 @@
 # RustyBox
 
+[![Crates.io Version](https://img.shields.io/crates/v/rustybox_utils)](https://crates.io/crates/rustybox_utils)
+[![Crates.io Downloads](https://img.shields.io/crates/d/rustybox_utils)](https://crates.io/crates/rustybox_utils)
+[![Crates.io License](https://img.shields.io/crates/l/rustybox_utils)](https://crates.io/crates/rustybox_utils)
+
 Rust implementation of common \*nix command-line utilities, inspired by [Toybox](https://landley.net/toybox/).
 
 RustyBox provides 37 commands in a single binary, designed for ease of use. It uses standard POSIX libc interfaces, making it (theoretically) portable to operating systems beyond Linux.
