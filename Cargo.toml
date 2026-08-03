@@ -1,5 +1,5 @@
 [package]
-name = "rustybox"
+name = "rustybox_utils"
 version = "0.1.3-alpha"
 edition = "2024"
 description = "Rust implementation of common *nix command-line utilities"

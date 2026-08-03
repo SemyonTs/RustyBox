@@ -16,8 +16,8 @@
 //     selects the command.
 // =============================================================================
 
-use rustybox::context::Context;
-use rustybox::registry;
+use rustybox_utils::context::Context;
+use rustybox_utils::registry;
 use std::env;
 use std::process::exit;
 
