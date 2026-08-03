@@ -27,22 +27,18 @@
 
 use crate::context::Context;
 use crate::flags::CommandFlags;
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-/// Parsed sort key specification from -k option.
 #[derive(Clone)]
 struct KeySpec {
-    /// 1-based field start index.
     field_start: usize,
-    /// Optional 1-based character offset within start field.
     char_start: Option<usize>,
-    /// 1-based field end index (inclusive). None means last field.
     field_end: Option<usize>,
-    /// Optional 1-based character offset within end field.
     char_end: Option<usize>,
-    /// Per-key modifiers that override global flags.
     ignore_blanks: bool,
     numeric: bool,
     reverse: bool,
@@ -54,21 +50,13 @@ struct KeySpec {
 impl KeySpec {
     fn new() -> Self {
         Self {
-            field_start: 1,
-            char_start: None,
-            field_end: None,
-            char_end: None,
-            ignore_blanks: false,
-            numeric: false,
-            reverse: false,
-            fold_case: false,
-            dictionary: false,
-            ignore_nonprint: false,
+            field_start: 1, char_start: None, field_end: None, char_end: None,
+            ignore_blanks: false, numeric: false, reverse: false,
+            fold_case: false, dictionary: false, ignore_nonprint: false,
         }
     }
 }
 
-/// Global sort configuration derived from command-line options.
 struct SortConfig {
     ignore_blanks: bool,
     numeric: bool,
@@ -85,24 +73,19 @@ struct SortConfig {
     keys: Vec<KeySpec>,
 }
 
-/// Parse a -k keydef string into a KeySpec.
 fn parse_keydef(s: &str, global: &SortConfig) -> Result<KeySpec, String> {
     let mut spec = KeySpec::new();
-
-    // Split on comma for start,end
     let (start_part, end_part) = if let Some(pos) = s.find(',') {
         (&s[..pos], Some(&s[pos + 1..]))
     } else {
         (s, None)
     };
 
-    // Parse field_start[.char_start][modifiers]
     let (start_nums, start_mods) = split_nums_and_mods(start_part);
     let (fs, cs) = parse_field_char(start_nums)?;
     spec.field_start = fs;
     spec.char_start = cs;
 
-    // Parse field_end[.char_end][modifiers]
     if let Some(end_str) = end_part {
         let (end_nums, end_mods) = split_nums_and_mods(end_str);
         let (fe, ce) = parse_field_char(end_nums)?;
@@ -110,19 +93,10 @@ fn parse_keydef(s: &str, global: &SortConfig) -> Result<KeySpec, String> {
         spec.char_end = ce;
         apply_modifiers(&mut spec, end_mods);
     }
-
     apply_modifiers(&mut spec, start_mods);
 
-    // Inherit global flags for any modifier not explicitly set on this key.
-    // Per POSIX: "If any modifier is attached to a field_start or to a
-    // field_end, no option shall apply to either." We interpret this as:
-    // if NO per-key modifiers are set at all, inherit globals.
-    let has_per_key = spec.ignore_blanks
-        || spec.numeric
-        || spec.reverse
-        || spec.fold_case
-        || spec.dictionary
-        || spec.ignore_nonprint;
+    let has_per_key = spec.ignore_blanks || spec.numeric || spec.reverse 
+        || spec.fold_case || spec.dictionary || spec.ignore_nonprint;
 
     if !has_per_key {
         spec.ignore_blanks = global.ignore_blanks;
@@ -132,11 +106,9 @@ fn parse_keydef(s: &str, global: &SortConfig) -> Result<KeySpec, String> {
         spec.dictionary = global.dictionary;
         spec.ignore_nonprint = global.ignore_nonprint;
     }
-
     Ok(spec)
 }
 
-/// Split "2.3bn" into ("2.3", "bn").
 fn split_nums_and_mods(s: &str) -> (&str, &str) {
     let first_alpha = s.find(|c: char| c.is_ascii_alphabetic());
     match first_alpha {
@@ -145,25 +117,17 @@ fn split_nums_and_mods(s: &str) -> (&str, &str) {
     }
 }
 
-/// Parse "2.3" into (field=2, char=Some(3)) or "2" into (field=2, char=None).
 fn parse_field_char(s: &str) -> Result<(usize, Option<usize>), String> {
     if let Some(dot) = s.find('.') {
-        let field: usize = s[..dot]
-            .parse()
-            .map_err(|_| format!("invalid field number '{}'", &s[..dot]))?;
-        let ch: usize = s[dot + 1..]
-            .parse()
-            .map_err(|_| format!("invalid character position '{}'", &s[dot + 1..]))?;
+        let field: usize = s[..dot].parse().map_err(|_| format!("invalid field '{}'", &s[..dot]))?;
+        let ch: usize = s[dot + 1..].parse().map_err(|_| format!("invalid char '{}'", &s[dot + 1..]))?;
         Ok((field, Some(ch)))
     } else {
-        let field: usize = s
-            .parse()
-            .map_err(|_| format!("invalid field number '{}'", s))?;
+        let field: usize = s.parse().map_err(|_| format!("invalid field '{}'", s))?;
         Ok((field, None))
     }
 }
 
-/// Apply modifier characters (b, d, f, i, n, r) to a KeySpec.
 fn apply_modifiers(spec: &mut KeySpec, mods: &str) {
     for ch in mods.chars() {
         match ch {
@@ -173,149 +137,451 @@ fn apply_modifiers(spec: &mut KeySpec, mods: &str) {
             'i' => spec.ignore_nonprint = true,
             'n' => spec.numeric = true,
             'r' => spec.reverse = true,
-            _ => {} // Unknown modifiers are silently ignored per practice.
+            _ => {}
         }
     }
 }
 
-/// Extract a sort key substring from a line according to a KeySpec.
-fn extract_key(line: &str, spec: &KeySpec, separator: Option<char>) -> String {
-    let fields: Vec<&str> = match separator {
-        Some(sep) => line.split(sep).collect(),
-        None => {
-            // Default: maximal sequences of non-blank chars separated by blanks.
-            // Leading blanks are part of field 1 when no -t is specified.
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() {
-                return String::new();
-            }
-            // Re-split respecting that leading blanks belong to field 1.
-            let lead = line.len() - trimmed.len();
-            let mut result = Vec::new();
-            if lead > 0 {
-                // Field 1 includes leading blanks + first non-blank word
-                let rest = trimmed.split_whitespace().next().unwrap_or("");
-                result.push(&line[..lead + rest.len()]);
-                for w in trimmed.split_whitespace().skip(1) {
-                    result.push(w);
-                }
-            } else {
-                for w in trimmed.split_whitespace() {
-                    result.push(w);
-                }
-            }
-            result
-        }
-    };
+// =============================================================================
+// FAST PATH OPTIMIZATIONS
+// =============================================================================
 
-    if spec.field_start == 0 || spec.field_start > fields.len() {
-        return String::new();
+/// Check if we can use the ultra-fast path (no complex -k, -f, -d, -i)
+fn can_use_fast_path(config: &SortConfig) -> bool {
+    if config.fold_case || config.dictionary || config.ignore_nonprint {
+        return false;
     }
-
-    let start_idx = spec.field_start - 1;
-    let end_idx = spec.field_end.map(|e| e - 1).unwrap_or(fields.len() - 1);
-    let end_idx = end_idx.min(fields.len() - 1);
-
-    if start_idx > end_idx {
-        return String::new();
+    if config.keys.len() != 1 {
+        return false;
     }
-
-    // Build the key from fields[start_idx..=end_idx]
-    let mut key_parts: Vec<&str> = Vec::new();
-    for i in start_idx..=end_idx {
-        key_parts.push(fields[i]);
+    let k = &config.keys[0];
+    // Fast path only if sorting the whole line, or a simple field without char offsets
+    if k.char_start.is_some() || k.char_end.is_some() {
+        return false;
     }
-
-    let raw_key = if separator.is_some() {
-        let sep_str = separator.unwrap().to_string();
-        key_parts.join(&sep_str)
-    } else {
-        key_parts.join(" ")
-    };
-
-    // Apply character offsets
-    let key = if spec.char_start.is_some() || spec.char_end.is_some() {
-        let chars: Vec<char> = raw_key.chars().collect();
-        let cs = spec.char_start.map(|c| c - 1).unwrap_or(0);
-        let ce = spec.char_end.unwrap_or(chars.len());
-        let cs = cs.min(chars.len());
-        let ce = ce.min(chars.len());
-        chars[cs..ce].iter().collect()
-    } else {
-        raw_key
-    };
-
-    // Apply ignore_blanks: trim leading/trailing blanks from the extracted key
-    if spec.ignore_blanks {
-        key.trim().to_string()
-    } else {
-        key
+    if k.field_start != 1 || k.field_end.is_some() {
+        return false; // Complex field extraction needed
     }
+    true
 }
 
-/// Compare two extracted key strings according to the KeySpec.
-fn compare_keys(a: &str, b: &str, spec: &KeySpec) -> Ordering {
-    let cmp = if spec.numeric {
-        let na = a.trim().parse::<f64>().unwrap_or(0.0);
-        let nb = b.trim().parse::<f64>().unwrap_or(0.0);
-        na.partial_cmp(&nb).unwrap_or(Ordering::Equal)
-    } else {
-        let sa = if spec.fold_case {
-            a.to_uppercase()
-        } else {
-            a.to_string()
-        };
-        let sb = if spec.fold_case {
-            b.to_uppercase()
-        } else {
-            b.to_string()
-        };
+/// Ultra-fast numeric sort using index sorting (Zero string moves)
+fn sort_numeric_fast(lines: &[String], reverse: bool, unique: bool, writer: &mut Box<dyn Write>) -> u8 {
+    // (value, original_index)
+    let mut indexed: Vec<(f64, usize)> = lines.iter().enumerate().map(|(i, line)| {
+        let val = line.trim().parse::<f64>().unwrap_or(0.0);
+        (val, i)
+    }).collect();
 
-        let sa = if spec.dictionary {
-            sa.chars()
-                .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
-                .collect::<String>()
-        } else {
-            sa
-        };
-        let sb = if spec.dictionary {
-            sb.chars()
-                .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
-                .collect::<String>()
-        } else {
-            sb
-        };
+    indexed.sort_unstable_by(|a, b| {
+        let cmp = a.0.total_cmp(&b.0);
+        if reverse { cmp.reverse() } else { cmp }
+    });
 
-        let sa = if spec.ignore_nonprint {
-            sa.chars()
-                .filter(|c| !c.is_ascii_control())
-                .collect::<String>()
-        } else {
-            sa
-        };
-        let sb = if spec.ignore_nonprint {
-            sb.chars()
-                .filter(|c| !c.is_ascii_control())
-                .collect::<String>()
-        } else {
-            sb
-        };
+    if unique {
+        indexed.dedup_by(|a, b| a.0 == b.0);
+    }
 
-        sa.cmp(&sb)
-    };
-
-    if spec.reverse { cmp.reverse() } else { cmp }
-}
-
-/// Entry point for the `sort` builtin.
-fn sort_main(ctx: &mut Context) -> u8 {
-    // Full POSIX optstr for sort.
-    let opts = match crate::args::parse(ctx, "bcCdfik:mno:rt:u") {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("sort: {e}");
+    for &(_, idx) in &indexed {
+        if writeln!(writer, "{}", lines[idx]).is_err() {
             return 2;
         }
+    }
+    0
+}
+
+/// Ultra-fast lexicographic sort (Zero-allocation slice sorting)
+fn sort_string_fast(lines: &mut Vec<String>, reverse: bool, unique: bool, writer: &mut Box<dyn Write>) -> u8 {
+    if reverse {
+        lines.sort_unstable_by(|a, b| b.cmp(a));
+    } else {
+        lines.sort_unstable();
+    }
+
+    if unique {
+        lines.dedup_by(|a, b| a == b);
+    }
+
+    for line in lines {
+        if writeln!(writer, "{}", line).is_err() {
+            return 2;
+        }
+    }
+    0
+}
+
+// =============================================================================
+// GENERIC PATH (For complex -k, modifiers, etc.)
+// =============================================================================
+
+enum SortKey<'a> {
+    Numeric(f64),
+    Borrowed(&'a str),
+    Owned(String),
+}
+
+#[derive(Clone)]
+enum SortKeyOwned {
+    Numeric(f64),
+    Text(String),
+}
+
+impl PartialEq for SortKeyOwned {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (SortKeyOwned::Numeric(a), SortKeyOwned::Numeric(b)) => a.total_cmp(b) == Ordering::Equal,
+            (SortKeyOwned::Text(a), SortKeyOwned::Text(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for SortKeyOwned {}
+
+impl PartialOrd for SortKeyOwned {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SortKeyOwned {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (SortKeyOwned::Numeric(a), SortKeyOwned::Numeric(b)) => a.total_cmp(b),
+            (SortKeyOwned::Text(a), SortKeyOwned::Text(b)) => a.cmp(b),
+            (SortKeyOwned::Numeric(_), SortKeyOwned::Text(_)) => Ordering::Less,
+            (SortKeyOwned::Text(_), SortKeyOwned::Numeric(_)) => Ordering::Greater,
+        }
+    }
+}
+
+struct Record<'a> {
+    line: &'a str,
+    keys: Vec<SortKey<'a>>,
+}
+
+#[derive(Clone)]
+struct MergeRecord {
+    line: String,
+    keys: Vec<SortKeyOwned>,
+}
+
+fn get_field_range(line: &str, field_num: usize, separator: Option<char>) -> (usize, usize) {
+    if field_num == 0 { return (0, line.len()); }
+    let mut current_field = 1;
+    let mut in_field = false;
+    let mut start_idx = 0;
+    let is_sep = |c: char| -> bool {
+        if let Some(sep) = separator { c == sep } else { c == ' ' || c == '\t' }
+    };
+
+    for (i, c) in line.char_indices() {
+        if is_sep(c) {
+            if in_field {
+                if current_field == field_num { return (start_idx, i); }
+                in_field = false;
+            }
+        } else {
+            if !in_field {
+                if current_field == field_num { start_idx = i; }
+                in_field = true;
+                current_field += 1;
+            }
+        }
+    }
+    if in_field && current_field - 1 == field_num { return (start_idx, line.len()); }
+    (0, 0)
+}
+
+fn build_record<'a>(line: &'a str, config: &SortConfig) -> Record<'a> {
+    let mut keys = Vec::with_capacity(config.keys.len());
+    for spec in &config.keys {
+        let (start, end) = get_field_range(line, spec.field_start, config.separator);
+        let (mut f_start, mut f_end) = if start == 0 && end == 0 {
+            (0, 0)
+        } else if let Some(fe) = spec.field_end {
+            let (_, fe_end) = get_field_range(line, fe, config.separator);
+            (start, fe_end.max(start))
+        } else {
+            (start, end)
+        };
+
+        let mut key_slice = &line[f_start..f_end];
+        if spec.char_start.is_some() || spec.char_end.is_some() {
+            let cs = spec.char_start.map(|c| c.saturating_sub(1)).unwrap_or(0);
+            let ce = spec.char_end.unwrap_or(usize::MAX);
+            let mut start_byte = 0;
+            let mut end_byte = key_slice.len();
+            let mut char_idx = 0;
+            for (i, _) in key_slice.char_indices() {
+                if char_idx == cs { start_byte = i; }
+                if char_idx == ce { end_byte = i; break; }
+                char_idx += 1;
+            }
+            if cs >= char_idx && char_idx > 0 { start_byte = key_slice.len(); }
+            key_slice = &key_slice[start_byte..end_byte];
+        }
+        if spec.ignore_blanks {
+            key_slice = key_slice.trim_start_matches(|c| c == ' ' || c == '\t');
+        }
+
+        let sort_key = if spec.numeric {
+            SortKey::Numeric(key_slice.trim_start_matches(|c| c == ' ' || c == '\t').parse::<f64>().unwrap_or(0.0))
+        } else if spec.fold_case || spec.dictionary || spec.ignore_nonprint {
+            let mut transformed = String::with_capacity(key_slice.len());
+            for c in key_slice.chars() {
+                if spec.dictionary && !(c.is_alphanumeric() || c.is_whitespace()) { continue; }
+                if spec.ignore_nonprint && c.is_control() { continue; }
+                if spec.fold_case { transformed.extend(c.to_lowercase()); } else { transformed.push(c); }
+            }
+            SortKey::Owned(transformed)
+        } else {
+            SortKey::Borrowed(key_slice)
+        };
+        keys.push(sort_key);
+    }
+    Record { line, keys }
+}
+
+fn build_merge_record(line: String, config: &SortConfig) -> MergeRecord {
+    let mut keys = Vec::with_capacity(config.keys.len());
+    for spec in &config.keys {
+        let (start, end) = get_field_range(&line, spec.field_start, config.separator);
+        let (mut f_start, mut f_end) = if start == 0 && end == 0 {
+            (0, 0)
+        } else if let Some(fe) = spec.field_end {
+            let (_, fe_end) = get_field_range(&line, fe, config.separator);
+            (start, fe_end.max(start))
+        } else {
+            (start, end)
+        };
+
+        let mut key_slice = &line[f_start..f_end];
+        if spec.char_start.is_some() || spec.char_end.is_some() {
+            let cs = spec.char_start.map(|c| c.saturating_sub(1)).unwrap_or(0);
+            let ce = spec.char_end.unwrap_or(usize::MAX);
+            let mut start_byte = 0;
+            let mut end_byte = key_slice.len();
+            let mut char_idx = 0;
+            for (i, _) in key_slice.char_indices() {
+                if char_idx == cs { start_byte = i; }
+                if char_idx == ce { end_byte = i; break; }
+                char_idx += 1;
+            }
+            if cs >= char_idx && char_idx > 0 { start_byte = key_slice.len(); }
+            key_slice = &key_slice[start_byte..end_byte];
+        }
+        if spec.ignore_blanks {
+            key_slice = key_slice.trim_start_matches(|c| c == ' ' || c == '\t');
+        }
+
+        let sort_key = if spec.numeric {
+            SortKeyOwned::Numeric(key_slice.trim_start_matches(|c| c == ' ' || c == '\t').parse::<f64>().unwrap_or(0.0))
+        } else if spec.fold_case || spec.dictionary || spec.ignore_nonprint {
+            let mut transformed = String::with_capacity(key_slice.len());
+            for c in key_slice.chars() {
+                if spec.dictionary && !(c.is_alphanumeric() || c.is_whitespace()) { continue; }
+                if spec.ignore_nonprint && c.is_control() { continue; }
+                if spec.fold_case { transformed.extend(c.to_lowercase()); } else { transformed.push(c); }
+            }
+            SortKeyOwned::Text(transformed)
+        } else {
+            SortKeyOwned::Text(key_slice.to_string())
+        };
+        keys.push(sort_key);
+    }
+    MergeRecord { line, keys }
+}
+
+fn compare_records(a: &Record, b: &Record, config: &SortConfig) -> Ordering {
+    for (i, spec) in config.keys.iter().enumerate() {
+        let key_a = &a.keys[i];
+        let key_b = &b.keys[i];
+        let cmp = match (key_a, key_b) {
+            (SortKey::Numeric(na), SortKey::Numeric(nb)) => na.total_cmp(nb),
+            (SortKey::Borrowed(sa), SortKey::Borrowed(sb)) => sa.cmp(sb),
+            (SortKey::Owned(sa), SortKey::Owned(sb)) => sa.cmp(sb),
+            (SortKey::Borrowed(sa), SortKey::Owned(sb)) => (*sa).cmp(sb.as_str()),
+            (SortKey::Owned(sa), SortKey::Borrowed(sb)) => sa.as_str().cmp(*sb),
+            _ => Ordering::Equal,
+        };
+        let cmp = if spec.reverse { cmp.reverse() } else { cmp };
+        if cmp != Ordering::Equal { return cmp; }
+    }
+    a.line.cmp(b.line)
+}
+
+fn compare_merge_records(a: &MergeRecord, b: &MergeRecord, config: &SortConfig) -> Ordering {
+    for (i, spec) in config.keys.iter().enumerate() {
+        let key_a = &a.keys[i];
+        let key_b = &b.keys[i];
+        let cmp = match (key_a, key_b) {
+            (SortKeyOwned::Numeric(na), SortKeyOwned::Numeric(nb)) => na.total_cmp(nb),
+            (SortKeyOwned::Text(sa), SortKeyOwned::Text(sb)) => sa.cmp(sb),
+            _ => Ordering::Equal,
+        };
+        let cmp = if spec.reverse { cmp.reverse() } else { cmp };
+        if cmp != Ordering::Equal { return cmp; }
+    }
+    a.line.cmp(&b.line)
+}
+
+fn records_equal(a: &Record, b: &Record, config: &SortConfig) -> bool {
+    compare_records(a, b, config) == Ordering::Equal
+}
+
+fn merge_records_equal(a: &MergeRecord, b: &MergeRecord, config: &SortConfig) -> bool {
+    compare_merge_records(a, b, config) == Ordering::Equal
+}
+
+fn check_sorted_streaming<R: BufRead>(reader: R, config: &SortConfig, filename: &str) -> u8 {
+    let mut lines = reader.lines();
+    let mut prev_line: Option<String> = None;
+    let mut line_num = 0;
+
+    for line_result in lines {
+        line_num += 1;
+        let curr_line = match line_result {
+            Ok(l) => l,
+            Err(_) => return 2,
+        };
+
+        if let Some(ref p_line) = prev_line {
+            let prev_rec = build_record(p_line, config);
+            let curr_rec = build_record(&curr_line, config);
+            let cmp = compare_records(&prev_rec, &curr_rec, config);
+
+            if config.unique && cmp == Ordering::Equal {
+                if !config.check_silent { eprintln!("sort: {}: {}: disorder (duplicate key)", filename, line_num); }
+                return 1;
+            }
+            if cmp == Ordering::Greater {
+                if !config.check_silent { eprintln!("sort: {}: {}: disorder", filename, line_num); }
+                return 1;
+            }
+        }
+        prev_line = Some(curr_line);
+    }
+    0
+}
+
+thread_local! {
+    static MERGE_CONFIG: RefCell<Option<*const SortConfig>> = RefCell::new(None);
+}
+
+struct HeapItem {
+    file_idx: usize,
+    record: MergeRecord,
+}
+
+impl PartialEq for HeapItem { fn eq(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Equal } }
+impl Eq for HeapItem {}
+impl PartialOrd for HeapItem { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        MERGE_CONFIG.with(|c| {
+            let ptr = c.borrow().expect("Merge config not set");
+            let cfg = unsafe { &*ptr };
+            compare_merge_records(&self.record, &other.record, cfg).reverse()
+        })
+    }
+}
+
+enum MergeSource {
+    File(std::io::Lines<BufReader<File>>),
+    Memory(std::vec::IntoIter<String>),
+}
+
+fn merge_sorted_files(files: &[String], config: &SortConfig) -> u8 {
+    let mut conflict_data: Option<(usize, Vec<String>)> = None;
+    if let Some(ref out) = config.output_file {
+        if let Some(pos) = files.iter().position(|f| f == out) {
+            if let Ok(f) = File::open(out) {
+                let lines: Vec<String> = BufReader::new(f).lines().filter_map(Result::ok).collect();
+                conflict_data = Some((pos, lines));
+            }
+        }
+    }
+
+    let conflict_pos = conflict_data.as_ref().map(|(pos, _)| *pos);
+    let mut sources: Vec<MergeSource> = Vec::with_capacity(files.len());
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+
+    for (i, file) in files.iter().enumerate() {
+        if conflict_pos == Some(i) {
+            sources.push(MergeSource::Memory(Vec::new().into_iter()));
+            continue;
+        }
+        let f = match File::open(file) {
+            Ok(f) => f,
+            Err(e) => { eprintln!("sort: '{}': {}", file, e); return 2; }
+        };
+        sources.push(MergeSource::File(BufReader::new(f).lines()));
+    }
+
+    let mut conflict_iter = conflict_data.map(|(_, lines)| lines.into_iter());
+
+    for i in 0..files.len() {
+        let line_opt = if conflict_pos == Some(i) {
+            conflict_iter.as_mut().and_then(|iter| iter.next())
+        } else {
+            if let MergeSource::File(ref mut reader) = sources[i] {
+                reader.next().and_then(Result::ok)
+            } else { None }
+        };
+
+        if let Some(line) = line_opt {
+            heap.push(HeapItem { file_idx: i, record: build_merge_record(line, config) });
+        }
+    }
+
+    let mut writer: Box<dyn Write> = if let Some(ref outfile) = config.output_file {
+        match File::create(outfile) {
+            Ok(f) => Box::new(BufWriter::new(f)),
+            Err(e) => { eprintln!("sort: '{}': {}", outfile, e); return 2; }
+        }
+    } else {
+        Box::new(BufWriter::new(std::io::stdout().lock()))
+    };
+
+    let mut last_written: Option<MergeRecord> = None;
+    MERGE_CONFIG.with(|c| *c.borrow_mut() = Some(config as *const _));
+
+    while let Some(mut item) = heap.pop() {
+        let is_duplicate = if config.unique {
+            if let Some(ref last) = last_written { merge_records_equal(last, &item.record, config) } else { false }
+        } else { false };
+
+        if !is_duplicate {
+            if writeln!(writer, "{}", item.record.line).is_err() {
+                MERGE_CONFIG.with(|c| *c.borrow_mut() = None);
+                return 2;
+            }
+            last_written = Some(item.record.clone());
+        }
+
+        let next_line = if conflict_pos == Some(item.file_idx) {
+            conflict_iter.as_mut().and_then(|iter| iter.next())
+        } else {
+            if let MergeSource::File(ref mut reader) = sources[item.file_idx] {
+                reader.next().and_then(Result::ok)
+            } else { None }
+        };
+
+        if let Some(line) = next_line {
+            item.record = build_merge_record(line, config);
+            heap.push(item);
+        }
+    }
+
+    MERGE_CONFIG.with(|c| *c.borrow_mut() = None);
+    writer.flush().ok();
+    0
+}
+
+fn sort_main(ctx: &mut Context) -> u8 {
+    let opts = match crate::args::parse(ctx, "bcCdfik:mno:rt:u") {
+        Ok(o) => o,
+        Err(e) => { eprintln!("sort: {e}"); return 2; }
     };
 
     let mut config = SortConfig {
@@ -334,18 +600,13 @@ fn sort_main(ctx: &mut Context) -> u8 {
         keys: Vec::new(),
     };
 
-    // Parse all -k options.
     for kdef in opts.get_strs('k') {
         match parse_keydef(kdef, &config) {
             Ok(spec) => config.keys.push(spec),
-            Err(e) => {
-                eprintln!("sort: {e}");
-                return 2;
-            }
+            Err(e) => { eprintln!("sort: {e}"); return 2; }
         }
     }
 
-    // If no -k specified, default key is entire line with global flags.
     if config.keys.is_empty() {
         let mut default_key = KeySpec::new();
         default_key.ignore_blanks = config.ignore_blanks;
@@ -357,144 +618,111 @@ fn sort_main(ctx: &mut Context) -> u8 {
         config.keys.push(default_key);
     }
 
-    // Read all input lines.
-    let mut lines: Vec<String> = Vec::new();
-    if ctx.optargs.is_empty() {
-        let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            match line {
-                Ok(l) => lines.push(l),
-                Err(_) => break,
-            }
-        }
-    } else {
-        for file in &ctx.optargs {
-            if file == "-" {
-                let stdin = std::io::stdin();
-                for line in stdin.lock().lines() {
-                    match line {
-                        Ok(l) => lines.push(l),
-                        Err(_) => break,
-                    }
-                }
-            } else {
-                match File::open(file) {
-                    Ok(f) => {
-                        let reader = BufReader::new(f);
-                        for line in reader.lines() {
-                            match line {
-                                Ok(l) => lines.push(l),
-                                Err(e) => {
-                                    eprintln!("sort: '{}': {}", file, e);
-                                    return 2;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("sort: '{}': {}", file, e);
-                        return 2;
-                    }
-                }
-            }
-        }
-    }
-
-    // Check mode: verify ordering without producing output.
     if config.check || config.check_silent {
-        for i in 1..lines.len() {
-            let prev = &lines[i - 1];
-            let curr = &lines[i];
-            let mut ordered = Ordering::Less;
-            for key_spec in &config.keys {
-                let ka = extract_key(prev, key_spec, config.separator);
-                let kb = extract_key(curr, key_spec, config.separator);
-                let cmp = compare_keys(&ka, &kb, key_spec);
-                if cmp != Ordering::Equal {
-                    ordered = cmp;
-                    break;
-                }
+        if ctx.optargs.is_empty() || ctx.optargs.first().map(|s| s.as_str()) == Some("-") {
+            return check_sorted_streaming(std::io::stdin().lock(), &config, "stdin");
+        } else if ctx.optargs.len() == 1 {
+            let file = &ctx.optargs[0];
+            match File::open(file) {
+                Ok(f) => return check_sorted_streaming(BufReader::new(f), &config, file),
+                Err(e) => { eprintln!("sort: '{}': {}", file, e); return 2; }
             }
-            if config.unique && ordered == Ordering::Equal {
-                if !config.check_silent {
-                    eprintln!("sort: disorder at line {}", i + 1);
-                }
-                return 1;
-            }
-            if ordered == Ordering::Greater {
-                if !config.check_silent {
-                    eprintln!("sort: disorder at line {}", i + 1);
-                }
-                return 1;
-            }
+        } else {
+            eprintln!("sort: multiple files not allowed with -c/-C");
+            return 2;
         }
-        return 0;
     }
 
-    // Sort using stable sort to preserve relative order of equal keys.
-    let sep = config.separator;
-    let keys = &config.keys;
-    lines.sort_by(|a, b| {
-        for key_spec in keys {
-            let ka = extract_key(a, key_spec, sep);
-            let kb = extract_key(b, key_spec, sep);
-            let cmp = compare_keys(&ka, &kb, key_spec);
-            if cmp != Ordering::Equal {
-                return cmp;
-            }
-        }
-        // Final byte-by-byte comparison for total ordering per POSIX.
-        a.cmp(b)
-    });
-
-    // Remove duplicates if -u is specified.
-    if config.unique {
-        let sep = config.separator;
-        let keys = &config.keys;
-        lines.dedup_by(|a, b| {
-            for key_spec in keys {
-                let ka = extract_key(a, key_spec, sep);
-                let kb = extract_key(b, key_spec, sep);
-                let cmp = compare_keys(&ka, &kb, key_spec);
-                if cmp != Ordering::Equal {
-                    return false;
-                }
-            }
-            true
-        });
+    if config.merge {
+        return merge_sorted_files(&ctx.optargs, &config);
     }
 
-    // Write output.
-    let result: u8 = if let Some(ref outfile) = config.output_file {
-        match File::create(outfile) {
-            Ok(f) => {
-                let mut writer = BufWriter::new(f);
-                for line in &lines {
-                    if writeln!(writer, "{}", line).is_err() {
-                        return 2;
+    // FAST I/O: Proper buffer reuse without allocation bombs
+    let mut lines: Vec<String> = Vec::new();
+    let mut buf = String::with_capacity(4096);
+
+    let mut process_reader = |mut reader: Box<dyn BufRead>| -> u8 {
+        loop {
+            buf.clear();
+            match reader.read_line(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    // Strip trailing newline safely
+                    if buf.ends_with('\n') {
+                        buf.pop();
+                        if buf.ends_with('\r') { buf.pop(); }
                     }
-                }
-                writer.flush().ok();
-                0
-            }
-            Err(e) => {
-                eprintln!("sort: '{}': {}", outfile, e);
-                2
+                    lines.push(buf.clone()); // Clone exact size, buf retains 4096 capacity
+                },
+                Err(_) => return 2,
             }
         }
-    } else {
-        let stdout = std::io::stdout();
-        let mut writer = BufWriter::new(stdout.lock());
-        for line in &lines {
-            if writeln!(writer, "{}", line).is_err() {
-                return 2;
-            }
-        }
-        writer.flush().ok();
         0
     };
 
-    result
+    let exit_code = if ctx.optargs.is_empty() || ctx.optargs.first().map(|s| s.as_str()) == Some("-") {
+        process_reader(Box::new(std::io::stdin().lock()))
+    } else {
+        let mut code = 0;
+        for file in &ctx.optargs {
+            match File::open(file) {
+                Ok(f) => {
+                    if process_reader(Box::new(BufReader::new(f))) != 0 {
+                        eprintln!("sort: '{}': read error", file);
+                        code = 2;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("sort: '{}': {}", file, e);
+                    code = 2;
+                }
+            }
+        }
+        code
+    };
+
+    if exit_code != 0 || lines.is_empty() {
+        return exit_code;
+    }
+
+    let mut writer: Box<dyn Write> = if let Some(ref outfile) = config.output_file {
+        match File::create(outfile) {
+            Ok(f) => Box::new(BufWriter::new(f)),
+            Err(e) => { eprintln!("sort: '{}': {}", outfile, e); return 2; }
+        }
+    } else {
+        Box::new(BufWriter::new(std::io::stdout().lock()))
+    };
+
+    // ==========================================================
+    // FAST PATH DISPATCH
+    // ==========================================================
+    if can_use_fast_path(&config) {
+        if config.numeric {
+            return sort_numeric_fast(&lines, config.reverse, config.unique, &mut writer);
+        } else {
+            return sort_string_fast(&mut lines, config.reverse, config.unique, &mut writer);
+        }
+    }
+
+    // ==========================================================
+    // GENERIC PATH (Schwartzian transform)
+    // ==========================================================
+    let mut records: Vec<Record> = lines.iter().map(|line| build_record(line, &config)).collect();
+    records.sort_unstable_by(|a, b| compare_records(a, b, &config));
+
+    if config.unique {
+        records.dedup_by(|a, b| records_equal(a, b, &config));
+    }
+
+    for rec in &records {
+        if writeln!(writer, "{}", rec.line).is_err() {
+            return 2;
+        }
+    }
+    
+    writer.flush().ok();
+    0
 }
 
 register_command!(
