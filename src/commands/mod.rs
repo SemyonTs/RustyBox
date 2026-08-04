@@ -24,13 +24,63 @@
 /// ```
 #[macro_export]
 macro_rules! register_command {
-    ($static_name:ident, $name:expr, $optstr:expr, $flags:expr, $run:expr) => {
+    ($static_name:ident, $name:expr, $optstr:expr, $flags:expr, $run:expr,
+        description = $desc:expr, help = $help_text:expr $(,)?) => {
+        $crate::__register_command_inner!(
+            $static_name,
+            $name,
+            $optstr,
+            $flags,
+            $run,
+            Some($desc),
+            Some($help_text)
+        );
+    };
+
+    ($static_name:ident, $name:expr, $optstr:expr, $flags:expr, $run:expr,
+        description = $desc:expr $(,)?) => {
+        $crate::__register_command_inner!(
+            $static_name,
+            $name,
+            $optstr,
+            $flags,
+            $run,
+            Some($desc),
+            None
+        );
+    };
+
+    ($static_name:ident, $name:expr, $optstr:expr, $flags:expr, $run:expr,
+        help = $help_text:expr $(,)?) => {
+        $crate::__register_command_inner!(
+            $static_name,
+            $name,
+            $optstr,
+            $flags,
+            $run,
+            None,
+            Some($help_text)
+        );
+    };
+
+    ($static_name:ident, $name:expr, $optstr:expr, $flags:expr, $run:expr $(,)?) => {
+        $crate::__register_command_inner!($static_name, $name, $optstr, $flags, $run, None, None);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __register_command_inner {
+    ($static_name:ident, $name:expr, $optstr:expr, $flags:expr, $run:expr,
+     $desc:expr, $help_text:expr) => {
         #[::linkme::distributed_slice($crate::registry::COMMANDS)]
         static $static_name: $crate::registry::CommandDef = $crate::registry::CommandDef {
             name: $name,
             optstr: $optstr,
             flags: $flags,
             run: $run,
+            description: $desc,
+            help: $help_text,
         };
     };
 }

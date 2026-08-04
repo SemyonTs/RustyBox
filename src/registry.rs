@@ -31,6 +31,8 @@ pub struct CommandDef {
     pub flags: u32,
     /// Entry point: receives a mutable context and returns an exit code.
     pub run: fn(&mut Context) -> u8,
+    pub description: Option<&'static str>,
+    pub help: Option<&'static str>,
 }
 
 impl CommandDef {
