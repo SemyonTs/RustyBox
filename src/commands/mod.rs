@@ -87,7 +87,6 @@ macro_rules! __register_command_inner {
 
 mod basename;
 mod cat;
-mod cd;
 mod chmod;
 mod cp;
 mod cut;
