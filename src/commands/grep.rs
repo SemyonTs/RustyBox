@@ -560,5 +560,27 @@ register_command!(
     "grep",
     "EFivnrclLqwxe:f:hHsP[EFP]",
     CommandFlags::BIN.bits(),
-    grep_main
+    grep_main,
+    description = "Search for lines matching a regular expression",
+    help = r#"\
+OPTIONS:    
+-E         Interpret patterns as extended regular expressions.
+-F         Interpret patterns as fixed strings (literal match).
+-P         Interpret patterns as Perl-compatible regular expressions.
+           Enables Unicode property escapes (\p{...}) and \x{NNNN}.
+-i         Case-insensitive matching.
+-v         Invert match: select non-matching lines.
+-n         Prefix each output line with its 1-based line number.
+-r, -R     Recursively search directories.
+-c         Print only a count of matching lines per file.
+-l         Print only the names of files containing at least one match.
+-L         Print only the names of files containing no match.
+-q         Quiet: suppress all normal output; exit immediately on first match.
+-s         Suppress error messages for nonexistent or unreadable files.
+-w         Match whole words only.
+-x         Match whole lines only (anchored at both ends).
+-e PATTERN Use PATTERN as the pattern (may be repeated).
+-f FILE    Read patterns from FILE, one per line.
+-h         Suppress the filename prefix in output.
+-H         Force the filename prefix in output."#
 );

@@ -80,4 +80,15 @@ fn tee_main(ctx: &mut Context) -> u8 {
     0
 }
 
-register_command!(TEE_CMD, "tee", "ai", CommandFlags::BIN.bits(), tee_main);
+register_command!(
+    TEE_CMD,
+    "tee",
+    "ai",
+    CommandFlags::BIN.bits(),
+    tee_main,
+    description = "Read from stdin and write to stdout and files",
+    help = "\
+OPTIONS:
+-a   Append to the given files rather than overwriting them.
+-i   Ignore SIGINT (recognised, signal handling is process-wide)."
+);

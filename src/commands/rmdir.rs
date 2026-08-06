@@ -133,5 +133,12 @@ register_command!(
     "rmdir",
     "<1(ignore-fail-on-non-empty)(i)p(parents)",
     CommandFlags::BIN.bits(),
-    rmdir_main
+    rmdir_main,
+    description = "Remove empty directories",
+    help = "\
+OPTIONS:
+-p                          Remove parent directories as well (similar to
+                            `rmdir -p a/b/c` → removes `a/b/c`, `a/b`, `a`).
+--ignore-fail-on-non-empty  Silently succeed when a directory is not empty.
+"
 );

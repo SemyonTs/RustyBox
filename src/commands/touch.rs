@@ -314,5 +314,15 @@ register_command!(
     "touch",
     "<1acd:fmr:t:h[!dtr]",
     CommandFlags::BIN.bits(),
-    touch_main
+    touch_main,
+    description = "Change file access and modification times",
+    help = "\
+OPTIONS:
+-a        Change the access time only.
+-c        Do not create any files that do not already exist.
+-d DATE   Use DATE instead of the current time (YYYY-MM-DD hh:mm:ss).
+-m        Change the modification time only.
+-r FILE   Use the timestamps of FILE as the new values.
+-t TIME   Use TIME in the format [[CC]YY]MMDDhhmm[.ss].
+-h        Affect symlinks themselves rather than their targets."
 );

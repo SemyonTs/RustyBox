@@ -470,5 +470,9 @@ register_command!(
     "printf",
     "^<1",
     CommandFlags::BIN.bits(),
-    printf_main
+    printf_main,
+    description = "Format and print data",
+    help = "\
+Supported format specifiers:
+%s, %d, %i, %u, %x, %X, %o, %f, %F, %e, %E, %g, %G, %c, %%, %b, %q."
 );

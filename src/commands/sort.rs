@@ -866,5 +866,21 @@ register_command!(
     "sort",
     "bcCdfik:mno:rt:u",
     CommandFlags::BIN.bits() | CommandFlags::USR.bits(),
-    sort_main
+    sort_main,
+    description = "Sort, merge, or sequence check text files",
+    help = "\
+OPTIONS:
+-b        Ignore leading blanks when determining sort keys.
+-c        Check that input is sorted; do not output.
+-C        Like -c but silent on disorder.
+-d        Dictionary order: only blanks and alphanumerics are significant.
+-f        Fold case: treat lowercase as uppercase equivalent.
+-i        Ignore non-printable characters.
+-k KEYDEF Define a sort key field.
+-m        Merge already-sorted files.
+-n        Numeric sort.
+-o FILE   Write output to FILE instead of stdout.
+-r        Reverse comparison result.
+-t CHAR   Use CHAR as field separator.
+-u        Unique: suppress duplicate lines based on sort keys."
 );

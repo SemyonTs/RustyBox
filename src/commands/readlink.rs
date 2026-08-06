@@ -213,5 +213,19 @@ register_command!(
     "readlink",
     "<1vnf(canonicalize)emqz[-mef][-qv]",
     CommandFlags::BIN.bits() | CommandFlags::USR.bits(),
-    readlink_main
+    readlink_main,
+    description = "Print the target of a symbolic link",
+    help = "\
+OPTIONS:
+-e      Canonicalise by following every symlink; fail if the final
+        component is missing.
+-f      Canonicalise; fail only if a parent directory is missing (the
+        final component may be absent).
+-m      Canonicalise without touching the filesystem (resolve `..` and
+        `.` components only).
+-n      Do not output the trailing newline.
+-q      Quiet: suppress error messages.
+-z      Delimit output with NUL instead of newline.
+-v      Verbose: prefix output with the original path.
+"
 );

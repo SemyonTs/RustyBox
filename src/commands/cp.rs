@@ -559,5 +559,22 @@ register_command!(
     "cp",
     "a(dpr)dfilnprsuvR[-HLP]",
     CommandFlags::BIN.bits(),
-    cp_main
+    cp_main,
+    description = "Copy files and directories",
+    help = "\
+OPTIONS:
+-a      Archive mode: equivalent to -dpR.
+-d      Preserve symlinks (do not dereference). Implied by -a.
+-f      Force overwrite of existing destination files (regular files only).
+-i      Prompt before overwriting.
+-l      Create hard links instead of copying.
+-n      Do not overwrite an existing file (no-clobber).
+-p      Preserve mode, ownership, and timestamps. Implied by -a.
+-R, -r  Copy directories recursively. Implied by -a.
+-s      Create symbolic links instead of copying.
+-u      Copy only when the source file is newer than the destination.
+-v      Verbose: print each source/destination pair.
+-H      Follow command-line symlinks (recursive only).
+-L      Follow all symlinks (recursive only).
+-P      Never follow symlinks (default for recursive)."
 );

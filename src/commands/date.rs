@@ -350,5 +350,14 @@ register_command!(
     "date",
     "d:uRI(s)",
     CommandFlags::BIN.bits(),
-    date_main
+    date_main,
+    description = "Display or set the system date and time",
+    help = "\
+OPTIONS:
+-d STRING   Display time described by STRING, not the current time.
+-u          Use UTC instead of the local timezone.
+-R          Output date and time in RFC 2822 format.
+-I          Output date and time in ISO 8601 format.
+-s          Set the system clock (recognised, not yet implemented).
++FORMAT     Custom output format using percent-escaped specifiers."
 );

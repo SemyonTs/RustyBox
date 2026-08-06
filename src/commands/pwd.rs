@@ -83,5 +83,10 @@ register_command!(
     "pwd",
     ">0LP",
     CommandFlags::BIN.bits() | CommandFlags::MAYFORK.bits(),
-    pwd_main
+    pwd_main,
+    description = "Print the current working directory",
+    help = "\
+OPTIONS:
+-L   Print the logical path (from $PWD, if valid).  This is the default.
+-P   Print the physical path (no symlink resolution)."
 );

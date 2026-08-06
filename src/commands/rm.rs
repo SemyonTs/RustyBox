@@ -234,5 +234,13 @@ register_command!(
     "rm",
     "f(force)iRrv[-fi]",
     CommandFlags::BIN.bits(),
-    rm_main
+    rm_main,
+    description = "Remove files and directories",
+    help = "\
+OPTIONS:
+-f      Force: ignore nonexistent files, never prompt.
+-i      Prompt before every removal.
+-r, -R  Remove directories and their contents recursively.
+-v      Verbose: print the name of each removed entry.
+"
 );

@@ -205,5 +205,12 @@ register_command!(
     "head",
     "n:>0c:>0qv",
     CommandFlags::BIN.bits(),
-    head_main
+    head_main,
+    description = "Output the first part of files",
+    help = "\
+OPTIONS:
+-n NUM   Print the first NUM lines (default: 10).
+-c NUM   Print the first NUM bytes.
+-q       Suppress the filename header in multi-file output.
+-v       Always print the filename header."
 );

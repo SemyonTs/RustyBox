@@ -676,5 +676,25 @@ register_command!(
     "ls",
     "1aAdfhiklRrstu[-Cx1]",
     CommandFlags::BIN.bits(),
-    ls_main
+    ls_main,
+    description = "List directory contents",
+    help = "\
+OPTIONS:
+-1      One entry per line (single-column output).
+-a      Include entries whose names start with `.`.
+-A      Like -a, but exclude `.` and `..`.
+-d      List directories themselves, not their contents.
+-F      Append a type indicator (`/`, `*`, `@`, `|`, `=`) to entries.
+-h      Human-readable sizes (e.g. 1K, 234M).
+-i      Print the inode number of each file.
+-k      Use 1024-byte blocks (implied by default block size).
+-l      Long format: permissions, link count, owner, group, size, time, name.
+-R      Recursively list subdirectories.
+-r      Reverse sort order.
+-S      Sort by file size (largest first).
+-t      Sort by modification time (newest first).
+-u      With -t: sort by access time instead of modification time.
+-C      Multi-column output (default when stdout is a terminal).
+-x      Sort entries horizontally across columns.
+--color[=WHEN]  Colorize output (auto, always, never)."
 );

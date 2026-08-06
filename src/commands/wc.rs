@@ -255,4 +255,18 @@ fn print_counts(
     writeln!(writer, "{out_buf}").ok();
 }
 
-register_command!(WC_CMD, "wc", "lwcm[cm]", CommandFlags::BIN.bits(), wc_main);
+register_command!(
+    WC_CMD,
+    "wc",
+    "lwcm[cm]",
+    CommandFlags::BIN.bits(),
+    wc_main,
+    description = "Print newline, word, and byte or character count",
+    help = "\
+OPTIONS:
+-l   Print the newline count.
+-w   Print the word count.
+-c   Print the byte count.
+-m   Print the character count (replaces bytes in output per POSIX).
+When no options are given the default is `-lwc`."
+);

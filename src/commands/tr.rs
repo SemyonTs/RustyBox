@@ -194,4 +194,16 @@ fn expand_set_bytes(s: &str) -> Vec<u8> {
     result
 }
 
-register_command!(TR_CMD, "tr", "ds(c)", CommandFlags::BIN.bits(), tr_main);
+register_command!(
+    TR_CMD,
+    "tr",
+    "ds(c)",
+    CommandFlags::BIN.bits(),
+    tr_main,
+    description = "Translate or delete characters",
+    help = "\
+OPTIONS:
+-d   Delete characters in SET1; do not translate.
+-s   Squeeze consecutive repeats of characters in SET1 into one.
+-c   Complement: operate on the set of characters not in SET1."
+);

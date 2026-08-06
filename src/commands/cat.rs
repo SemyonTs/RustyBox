@@ -205,4 +205,18 @@ fn write_visualized<W: Write>(mut b: u8, v: bool, t: bool, e: bool, out: &mut W)
     Ok(())
 }
 
-register_command!(CAT_CMD, "cat", "uvte", CommandFlags::BIN.bits(), cat_main);
+register_command!(
+    CAT_CMD,
+    "cat",
+    "uvte",
+    CommandFlags::BIN.bits(),
+    cat_main,
+    description = "Concatenate and print files to standard output",
+    help = "\
+OPTIONS:
+-u      Unbuffered output (read/write 1 byte at a time).
+-v      Visualize non-printing characters (except tab, newline).
+-t      Visualize tab characters as `^I`. Implies -v.
+-e      Visualize trailing newline as `$`.  Implies -v.
+-     Interpreted as standard input."
+);

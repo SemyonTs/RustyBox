@@ -109,5 +109,15 @@ register_command!(
     "uname",
     "asnrvmo",
     CommandFlags::BIN.bits(),
-    uname_main
+    uname_main,
+    description = "Print system information",
+    help = "\
+OPTIONS:
+-a   Print all available information (equivalent to -snrvm).
+-s   Print the kernel name.
+-n   Print the network node hostname.
+-r   Print the kernel release.
+-v   Print the kernel version.
+-m   Print the machine hardware name.
+-o   Print the operating system name (recognised, not yet implemented)."
 );

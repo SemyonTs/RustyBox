@@ -44,5 +44,9 @@ register_command!(
     "unlink",
     "<1>1",
     CommandFlags::BIN.bits() | CommandFlags::USR.bits(),
-    unlink_main
+    unlink_main,
+    description = "Remove a single file",
+    help = "\
+USAGE: 
+unlink FILE"
 );

@@ -169,4 +169,18 @@ fn get_groups() -> Vec<u32> {
     }
 }
 
-register_command!(ID_CMD, "id", "ugnG(r)", CommandFlags::BIN.bits(), id_main);
+register_command!(
+    ID_CMD,
+    "id",
+    "ugnG(r)",
+    CommandFlags::BIN.bits(),
+    id_main,
+    description = "Print user and group identity information",
+    help = "\
+OPTIONS:
+-u   Print only the effective user ID.
+-g   Print only the effective group ID.
+-G   Print all group IDs.
+-n   Print names instead of numeric IDs (combine with -u, -g, -G).
+-r   Print real IDs instead of effective IDs."
+);

@@ -389,5 +389,12 @@ register_command!(
     "cut",
     "b:c:f:d:",
     CommandFlags::BIN.bits(),
-    cut_main
+    cut_main,
+    description = "Extract selected parts of each line of a file",
+    help = "\
+OPTIONS:
+-b LIST   Select bytes.
+-c LIST   Select characters.
+-f LIST   Select fields (delimited by -d, default TAB).
+-d DELIM  Field delimiter (used with -f)."
 );

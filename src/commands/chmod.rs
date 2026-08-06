@@ -312,5 +312,11 @@ register_command!(
     "chmod",
     "Rcvf",
     CommandFlags::BIN.bits(),
-    chmod_main
+    chmod_main,
+    description = "Change the file mode bits of each given file according to mode",
+    help = "\
+OPTIONS:
+-R      Recursively change modes of directories and their contents.
+-v      Output a diagnostic for every file processed.
+-f      Suppress most error messages."
 );

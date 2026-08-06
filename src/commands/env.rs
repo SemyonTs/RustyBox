@@ -143,4 +143,16 @@ fn env_main(ctx: &mut Context) -> u8 {
     }
 }
 
-register_command!(ENV_CMD, "env", "i", CommandFlags::BIN.bits(), env_main);
+register_command!(
+    ENV_CMD,
+    "env",
+    "i",
+    CommandFlags::BIN.bits(),
+    env_main,
+    description = "Run a command in a modified environment",
+    help = "\
+OPTIONS:
+-i          Start with an empty environment, ignoring the inherited one.
+-u NAME     Remove the variable NAME from the environment (extension).
+NAME=VALUE  Set (or override) an environment variable."
+);

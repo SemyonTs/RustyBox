@@ -123,5 +123,11 @@ register_command!(
     "echo",
     "^?ne",
     CommandFlags::BIN.bits() | CommandFlags::MAYFORK.bits() | CommandFlags::LINEBUF.bits(),
-    echo_main
+    echo_main,
+    description = "Display a line of text",
+    help = "\
+OPTIONS:
+-n   Do not output the trailing newline.
+-e   Enable interpretation of backslash-escaped characters
+      (\n, \t, \r, \\).  Without -e the input is printed literally."
 );

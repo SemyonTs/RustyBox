@@ -120,5 +120,10 @@ register_command!(
     "sleep",
     "<1",
     CommandFlags::BIN.bits(),
-    sleep_main
+    sleep_main,
+    description = "Delay for a specified amount of time",
+    help = "\
+Accepts one or more duration arguments (fractional values permitted) with
+ optional suffix: `s` (seconds, default), `m` (minutes), `h` (hours),
+ `d` (days).  All durations are summed before sleeping."
 );

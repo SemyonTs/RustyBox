@@ -237,4 +237,21 @@ fn human_size(size: u64) -> String {
     }
 }
 
-register_command!(DU_CMD, "du", "hsad:HkLx", CommandFlags::BIN.bits(), du_main);
+register_command!(
+    DU_CMD,
+    "du",
+    "hsad:HkLx",
+    CommandFlags::BIN.bits(),
+    du_main,
+    description = "Estimate file space usage",
+    help = "\
+OPTIONS:
+-h         Human-readable sizes (e.g. 1K, 234M, 2G).
+-s         Display only a total for each argument (summary).
+-a         Show counts for all files, not just directories.
+-d DEPTH   Limit recursion to DEPTH levels below each argument.
+-H         Follow symlinks specified on the command line.
+-k         Write file sizes in 1024-byte blocks.
+-L         Follow all symlinks.
+-x         Limit to the same filesystem."
+);

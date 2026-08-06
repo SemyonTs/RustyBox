@@ -595,4 +595,32 @@ fn process_line<W: Write>(
     Ok(())
 }
 
-register_command!(SED_CMD, "sed", "ne:f:", CommandFlags::BIN.bits(), sed_main);
+register_command!(
+    SED_CMD,
+    "sed",
+    "ne:f:",
+    CommandFlags::BIN.bits(),
+    sed_main,
+    description = "Stream editor for filtering and transforming text",
+    help = "\
+Supported commands:
+  [addr]s/pattern/replacement/[g]   Substitute (global with `g` flag).
+  [addr]p                           Print the current pattern space.
+  [addr]d                           Delete the pattern space; start next cycle.
+  [addr]a text                      Append text after the current line.
+  [addr]i text                      Insert text before the current line.
+  [addr]c text                      Replace the current line with text.
+
+Supported addresses:
+  N         Line number N.
+  $         Last line of input.
+  /regex/   Lines matching regex (BRE syntax).
+  N,M       Range from line N to M.
+  /r1/,/r2/ Range from regex r1 to r2.
+
+Supported options:
+  -n        Suppress automatic printing of the pattern space.
+  -e SCRIPT Add a script to the list of commands (may be repeated).
+  -f FILE   Read script commands from FILE.
+"
+);

@@ -187,4 +187,18 @@ fn copy_hierarchy(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-register_command!(MV_CMD, "mv", "finTv", CommandFlags::BIN.bits(), mv_main);
+register_command!(
+    MV_CMD,
+    "mv",
+    "finTv",
+    CommandFlags::BIN.bits(),
+    mv_main,
+    description = "Move (rename) files",
+    help = "\
+OPTIONS:
+-f      Force overwrite of existing destination files.
+-i      Prompt before overwriting.
+-n      Do not overwrite an existing file (no-clobber).
+-v      Verbose: print each source/destination pair.
+-T      Treat the destination as a normal file, not a directory."
+);

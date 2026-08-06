@@ -23,5 +23,6 @@ register_command!(
     "true",
     "",
     CommandFlags::BIN.bits() | CommandFlags::NOHELP.bits(),
-    true_main
+    true_main,
+    description = "Return a zero exit code"
 );

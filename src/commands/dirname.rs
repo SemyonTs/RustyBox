@@ -88,5 +88,6 @@ register_command!(
     "dirname",
     "<1",
     CommandFlags::BIN.bits() | CommandFlags::USR.bits(),
-    dirname_main
+    dirname_main,
+    description = "Return the directory portion of a pathname"
 );

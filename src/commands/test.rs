@@ -290,6 +290,31 @@ fn eval_binary(a: &str, op: &str, b: &str) -> bool {
     }
 }
 
-register_command!(TEST_CMD, "test", "", CommandFlags::BIN.bits(), test_main);
+const _description: &str = "Evaluate conditional expressions";
+const _help: &str = "\
+OPERATORS:
+Unary:  -e, -f, -d, -L, -h, -r, -w, -x, -s, -z, -n, -c, -b, -p, -S,
+        -u, -g, -k, -O, -G.
+Binary: =, !=, -eq, -ne, -lt, -gt, -le, -ge, -nt, -ot, -ef.
+Logical: !, -a, -o, ( ).
+";
 
-register_command!(BRACKET_CMD, "[", "", CommandFlags::BIN.bits(), test_main);
+register_command!(
+    TEST_CMD,
+    "test",
+    "",
+    CommandFlags::BIN.bits(),
+    test_main,
+    description = "{_description}",
+    help = "{_help}"
+);
+
+register_command!(
+    BRACKET_CMD,
+    "[",
+    "",
+    CommandFlags::BIN.bits(),
+    test_main,
+    description = "{_description}",
+    help = "{_help}"
+);

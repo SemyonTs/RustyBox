@@ -194,5 +194,12 @@ register_command!(
     "mkdir",
     "<1vp(parent)(parents)m:",
     CommandFlags::BIN.bits(),
-    mkdir_main
+    mkdir_main,
+    description = "Create directories",
+    help = "\
+OPTIONS:
+-p        Create parent directories as needed (no error if existing).
+-m MODE   Set the file permission bits of the new directory to MODE
+          (octal or symbolic, e.g. `0755` or `u=rwx,go=rx`).
+-v        Print a message for each created directory."
 );

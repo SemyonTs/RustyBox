@@ -232,5 +232,16 @@ register_command!(
     "ln",
     "<1rt:TvnfsL",
     CommandFlags::BIN.bits(),
-    ln_main
+    ln_main,
+    description = "Create links between files",
+    help = "\
+OPTIONS:
+-s      Create symbolic links instead of hard links.
+-f      Force: remove existing destination files before linking.
+-n      Treat a destination that is a symlink to a directory as a file.
+-r      Create relative symbolic links. Implies -s.
+-t DIR  Specify the target directory (all links are created inside DIR).
+-T      Treat the destination as a normal file, not a directory.
+-v      Verbose: print the name of each created link.
+-L      Dereference targets that are symbolic links (for hard links)."
 );

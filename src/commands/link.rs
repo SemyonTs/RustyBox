@@ -48,5 +48,9 @@ register_command!(
     "link",
     "<2>2",
     CommandFlags::BIN.bits() | CommandFlags::USR.bits(),
-    link_main
+    link_main,
+    description = "Create a hard link",
+    help = "\
+USAGE: 
+link FILE NEWLINK"
 );

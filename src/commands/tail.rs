@@ -375,5 +375,15 @@ register_command!(
     "tail",
     "n:c:fqv",
     CommandFlags::BIN.bits(),
-    tail_main
+    tail_main,
+    description = "Output the last part of files",
+    help = "\
+OPTIONS:
+-n NUM   Output the last NUM lines (default: 10).  +NUM starts from
+         line NUM. -NUM is equivalent to NUM.
+-c NUM   Output the last NUM bytes. +NUM starts from byte NUM.
+         -NUM is equivalent to NUM.
+-f       Follow: append data as the file grows.
+-q       Suppress the filename header in multi-file output.
+-v       Always print the filename header."
 );

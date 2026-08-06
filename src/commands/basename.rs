@@ -110,5 +110,12 @@ register_command!(
     "basename",
     "^<1as:",
     CommandFlags::BIN.bits() | CommandFlags::USR.bits(),
-    basename_main
+    basename_main,
+    description = "Return the non-directory portion of a pathname",
+    help = "\
+OPTIONS:
+-a       Treat every argument as a pathname (multiple-output mode).
+-s SUF   Strip SUF from the end of each resulting filename.
+         Implies -a.
+Default  Two-argument form: basename NAME [SUFFIX]."
 );

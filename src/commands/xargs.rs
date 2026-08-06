@@ -206,5 +206,17 @@ register_command!(
     "xargs",
     "^0I:L:n:P:rt",
     CommandFlags::BIN.bits(),
-    xargs_main
+    xargs_main,
+    description = "Build and execute command lines from standard input",
+    help = "\
+OPTIONS:
+-0       Input items are NUL-separated instead of whitespace-separated.
+-I REPL  Replace occurrences of REPL in initial arguments with each
+         input item (one command invocation per item).
+-L MAX   Use at most MAX nonblank input lines per command invocation.
+-n MAX   Use at most MAX arguments per command invocation.
+-P MAX   Run up to MAX processes at a time (currently sequential).
+-r       Do not run command if input is empty (GNU default behavior).
+-t       Trace: print each command line to stderr before executing.
+    "
 );

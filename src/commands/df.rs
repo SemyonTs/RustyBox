@@ -296,4 +296,20 @@ fn human(bytes: u64, flag_h: bool, block_size: u64) -> String {
     }
 }
 
-register_command!(DF_CMD, "df", "haTkPti", CommandFlags::BIN.bits(), df_main);
+register_command!(
+    DF_CMD,
+    "df",
+    "haTkPti",
+    CommandFlags::BIN.bits(),
+    df_main,
+    description = "Report filesystem disk space usage",
+    help = "\
+OPTIONS:
+-h      Human-readable sizes (e.g. 1K, 234M, 2G).
+-a      Include dummy filesystems (recognised, not yet filtered).
+-T      Print filesystem type column.
+-k      Use 1024-byte units instead of the default 512-byte units.
+-P      Produce output in the POSIX portable format.
+-t      Include total allocated-space figures (always included in this implementation).
+-i      Report inode usage instead of block usage."
+);

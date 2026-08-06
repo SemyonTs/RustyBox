@@ -201,4 +201,16 @@ fn signal_number(name: &str) -> Option<i32> {
     name.parse::<i32>().ok()
 }
 
-register_command!(KILL_CMD, "kill", "", CommandFlags::BIN.bits(), kill_main);
+register_command!(
+    KILL_CMD,
+    "kill",
+    "",
+    CommandFlags::BIN.bits(),
+    kill_main,
+    description = "Send a signal to a process",
+    help = "\
+OPTIONS:
+-l          List signal names, or translate a signal number to a name.
+-s SIG      Specify the signal to send by name or number (default: SIGTERM).
+-SIG        Shorthand for specifying the signal directly."
+);
