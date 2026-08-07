@@ -130,11 +130,7 @@ fn parse_size_suffix(s: &str) -> (usize, usize) {
 fn get_name_max() -> usize {
     unsafe {
         let ret = libc::pathconf(b"/\0".as_ptr() as *const libc::c_char, libc::_PC_NAME_MAX);
-        if ret == -1 {
-            255
-        } else {
-            ret as usize
-        }
+        if ret == -1 { 255 } else { ret as usize }
     }
 }
 
@@ -271,11 +267,7 @@ fn split_by_lines<R: BufRead>(
         line_count += 1;
     }
 
-    if error_occurred {
-        1
-    } else {
-        0
-    }
+    if error_occurred { 1 } else { 0 }
 }
 
 /// Split input by byte count.
@@ -350,11 +342,7 @@ fn split_by_bytes<R: BufRead>(
         }
     }
 
-    if error_occurred {
-        1
-    } else {
-        0
-    }
+    if error_occurred { 1 } else { 0 }
 }
 
 register_command!(

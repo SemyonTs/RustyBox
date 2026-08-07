@@ -255,9 +255,18 @@ fn parse_type_string(ts: &str) -> Vec<FormatSpec> {
                     'S' => size = Some(2),
                     'I' => size = Some(4),
                     'L' => size = Some(8),
-                    'F' => { size = Some(4); float_kind = Some('F'); }
-                    'D' => { size = Some(8); float_kind = Some('D'); }
-                    'L' => { size = Some(16); float_kind = Some('L'); }
+                    'F' => {
+                        size = Some(4);
+                        float_kind = Some('F');
+                    }
+                    'D' => {
+                        size = Some(8);
+                        float_kind = Some('D');
+                    }
+                    'L' => {
+                        size = Some(16);
+                        float_kind = Some('L');
+                    }
                     _ => {}
                 }
                 i += 1;

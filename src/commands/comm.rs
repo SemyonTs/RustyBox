@@ -80,14 +80,16 @@ fn comm_main(ctx: &mut Context) -> u8 {
 
     // Helper to read the next line, handling errors.
     let read_next = |lines: &mut dyn Iterator<Item = io::Result<String>>| -> Option<String> {
-        lines.next().map(|res| res.unwrap_or_else(|e| {
-            eprintln!("comm: read error: {}", e);
-            // We exit with error; but we can't easily propagate, so we'll
-            // exit in the main loop. We'll return an empty string and set a flag.
-            // To keep it simple, we'll use `expect`; but better to handle gracefully.
-            // We'll change approach: use a function that returns Result.
-            String::new()
-        }))
+        lines.next().map(|res| {
+            res.unwrap_or_else(|e| {
+                eprintln!("comm: read error: {}", e);
+                // We exit with error; but we can't easily propagate, so we'll
+                // exit in the main loop. We'll return an empty string and set a flag.
+                // To keep it simple, we'll use `expect`; but better to handle gracefully.
+                // We'll change approach: use a function that returns Result.
+                String::new()
+            })
+        })
     };
 
     // For robust error handling, we'll use a custom iterator that returns Result.

@@ -17,7 +17,7 @@ use crate::context::Context;
 use crate::flags::CommandFlags;
 use std::ffi::CStr;
 use std::fs;
-use std::os::unix::fs::{chown, lchown, MetadataExt};
+use std::os::unix::fs::{MetadataExt, chown, lchown};
 use std::path::Path;
 
 /// Entry point for `chown`.
@@ -83,7 +83,11 @@ fn chown_main(ctx: &mut Context) -> u8 {
 /// Returns (owner_part, group_part), where either may be empty.
 fn parse_owner_group(spec: &str) -> (Option<String>, Option<String>) {
     if let Some(idx) = spec.find(':') {
-        let owner = if idx == 0 { None } else { Some(spec[..idx].to_string()) };
+        let owner = if idx == 0 {
+            None
+        } else {
+            Some(spec[..idx].to_string())
+        };
         let group = if idx + 1 < spec.len() {
             Some(spec[idx + 1..].to_string())
         } else {
