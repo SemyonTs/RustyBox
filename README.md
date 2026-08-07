@@ -6,7 +6,10 @@
 
 Rust implementation of common \*nix command-line utilities, inspired by [Toybox](https://landley.net/toybox/).
 
-RustyBox provides 37 commands in a single binary, designed for ease of use. It uses standard POSIX libc interfaces, making it (theoretically) portable to operating systems beyond Linux.
+RustyBox provides 58 commands:
+
+basename, cat, chmod, cp, cut, date, df, dirname, du, echo, env, false, grep, head, id, kill, link, ln, ls, mkdir, mv, printf, pwd, readlink, rm, rmdir, sed, sleep, sort, tail, tee, test, touch, tr, true, uname, unlink, wc, xargs, sh, cd, exit, exec, export, alias, jobs, fg, bg, eval, set, unset.
+
 
 ## Usage
 
