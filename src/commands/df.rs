@@ -27,9 +27,10 @@ use std::os::unix::fs::MetadataExt;
 
 /// Entry point for the `df` builtin.
 ///
-/// Reads mount information from `/proc/mounts` and queries each filesystem
-/// via `statvfs(2)`.  When one or more path arguments are supplied only the
-/// filesystems backing those paths are shown.
+/// Reads mount information from the platform-specific source (e.g. `/proc/mounts`
+/// on Linux, `/etc/mtab` elsewhere) and queries each filesystem via `statvfs(2)`.
+/// When one or more path arguments are supplied only the filesystems backing
+/// those paths are shown.
 fn df_main(ctx: &mut Context) -> u8 {
     let opts = match crate::args::parse(ctx, "haTkPti") {
         Ok(o) => o,
@@ -65,7 +66,7 @@ fn df_main(ctx: &mut Context) -> u8 {
                     if let Some(m) = mounts.iter().find(|m| m.dev == dev) {
                         selected.push(m.clone());
                     } else {
-                        // Fallback for paths not explicitly found in /proc/mounts
+                        // Fallback for paths not explicitly found in mount table.
                         selected.push(Mount {
                             device: arg.clone(),
                             dev,
@@ -216,7 +217,7 @@ fn df_main(ctx: &mut Context) -> u8 {
     exit_code
 }
 
-/// A single entry from `/proc/mounts`.
+/// A single entry from the mount table.
 #[derive(Clone)]
 struct Mount {
     /// Device name (e.g. "/dev/sda1").
@@ -229,27 +230,103 @@ struct Mount {
     fs_type: String,
 }
 
-/// Parse `/proc/mounts` and return a vector of `Mount` entries.
+/// Read the list of currently mounted filesystems.
 ///
-/// Each line is expected to contain at least three whitespace-separated
-/// fields: device, mount point, and filesystem type.
+/// On Linux `/proc/mounts` is preferred; on macOS / BSD systems `mount(8)`
+/// output is parsed.  Falls back to `/etc/mtab` if neither is available.
 fn read_mounts() -> Vec<Mount> {
-    let mut result = Vec::new();
+    // Linux: /proc/mounts is always present and authoritative.
     if let Ok(content) = std::fs::read_to_string("/proc/mounts") {
-        for line in content.lines() {
-            let mut parts = line.split_whitespace();
-            let device = match parts.next() {
-                Some(d) => d.to_string(),
-                None => continue,
-            };
-            let mount_point = match parts.next() {
-                Some(mp) => mp.to_string(),
-                None => continue,
-            };
-            let fs_type = match parts.next() {
-                Some(ft) => ft.to_string(),
-                None => continue,
-            };
+        return parse_mount_table(&content);
+    }
+
+    // macOS / BSD: use `mount` command output.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        if let Ok(output) = std::process::Command::new("mount").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return parse_bsd_mount_output(&stdout);
+        }
+    }
+
+    // Generic fallback: try /etc/mtab.
+    if let Ok(content) = std::fs::read_to_string("/etc/mtab") {
+        return parse_mount_table(&content);
+    }
+
+    Vec::new()
+}
+
+/// Parse a Linux-style mount table (whitespace-separated fields per line).
+fn parse_mount_table(content: &str) -> Vec<Mount> {
+    let mut result = Vec::new();
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        let device = match parts.next() {
+            Some(d) => d.to_string(),
+            None => continue,
+        };
+        let mount_point = match parts.next() {
+            Some(mp) => mp.to_string(),
+            None => continue,
+        };
+        let fs_type = match parts.next() {
+            Some(ft) => ft.to_string(),
+            None => continue,
+        };
+        let dev = if let Ok(meta) = fs::metadata(&mount_point) {
+            meta.dev()
+        } else {
+            0
+        };
+        result.push(Mount {
+            device,
+            dev,
+            mount_point,
+            fs_type,
+        });
+    }
+    result
+}
+
+/// Parse `mount(8)` output from BSD / macOS systems.
+///
+/// Typical line:
+///   /dev/disk1s1 on / (apfs, local, journaled)
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn parse_bsd_mount_output(output: &str) -> Vec<Mount> {
+    let mut result = Vec::new();
+    for line in output.lines() {
+        // Expected format: device on mountpoint (fstype, ...)
+        let mut parts = line.splitn(3, " on ");
+        let device = match parts.next() {
+            Some(d) => d.trim().to_string(),
+            None => continue,
+        };
+        let remainder = match parts.next() {
+            Some(r) => r,
+            None => continue,
+        };
+        // Now split remainder: "mountpoint (fstype, ...)"
+        if let Some(paren_idx) = remainder.find('(') {
+            let mount_point = remainder[..paren_idx].trim().to_string();
+            let inside = &remainder[paren_idx + 1..];
+            let fs_type = inside
+                .split(',')
+                .next()
+                .unwrap_or("unknown")
+                .trim()
+                .to_string();
             let dev = if let Ok(meta) = fs::metadata(&mount_point) {
                 meta.dev()
             } else {
