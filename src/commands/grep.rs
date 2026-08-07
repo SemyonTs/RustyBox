@@ -37,6 +37,13 @@ use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
+/// A compiled pattern, either byte‑oriented (fast, no UTF‑8 validation)
+/// or Unicode (required for -P and for -i with non‑ASCII patterns).
+enum Pattern {
+    Bytes(regex::bytes::Regex),
+    Unicode(Regex),
+}
+
 /// Entry point for the `grep` builtin.
 ///
 /// Exit codes:
@@ -70,19 +77,15 @@ fn grep_main(ctx: &mut Context) -> u8 {
     let flag_h = opts.count('h') > 0;
     let flag_H = opts.count('H') > 0;
 
-    // Compile patterns directly into Regex objects.
-    let mut regexes: Vec<Regex> = Vec::new();
+    // Compiled patterns.
+    let mut patterns: Vec<Pattern> = Vec::new();
     // POSIX: a null (empty) pattern matches every line.
     let mut has_empty_pattern = false;
 
-    // Helper to compile a pattern string with flags applied.
-    let compile_pattern = |raw: &str| -> Result<Regex, String> {
-        let re_str = if flag_F {
-            regex::escape(raw)
-        } else if flag_P {
-            // -P mode: pass pattern directly to regex crate.
-            // The regex crate natively supports PCRE-like syntax including
-            // \x{NNNN}, \p{Cyrillic}, \d, \w, etc.
+    // Helper to compile a single pattern string with the current flags.
+    let compile_pattern = |raw: &str| -> Result<Pattern, String> {
+        // For -P we always produce a Unicode regex (required for \p{...}, etc.).
+        if flag_P {
             let mut s = raw.to_string();
             if flag_w {
                 s = format!(r"\b{}\b", s);
@@ -90,29 +93,58 @@ fn grep_main(ctx: &mut Context) -> u8 {
             if flag_x {
                 s = format!("^(?:{})$", s);
             }
-            s
+            let re = if flag_i {
+                Regex::new(&format!("(?i){}", s))
+            } else {
+                Regex::new(&s)
+            };
+            return re
+                .map(Pattern::Unicode)
+                .map_err(|e| format!("invalid regular expression '{}': {}", raw, e));
+        }
+
+        // Non‑P path: build the pattern string (BRE→ERE, escaping, etc.).
+        let re_str = if flag_F {
+            regex::escape(raw)
         } else {
-            let mut s = raw.to_string();
-            // When neither -E nor -F nor -P is given, treat the pattern as BRE.
-            if !flag_E {
-                s = bre_to_ere(&s);
-            }
+            let mut s = if !flag_E {
+                bre_to_ere(raw)
+            } else {
+                raw.to_string()
+            };
             if flag_w {
                 s = format!(r"\b{}\b", s);
             }
             if flag_x {
-                s = format!("^{}$", s);
+                s = format!("^(?:{})$", s);
             }
             s
         };
 
-        let re = if flag_i {
-            Regex::new(&format!("(?i){}", re_str))
-        } else {
-            Regex::new(&re_str)
-        };
+        // If -i is active and the pattern contains at least one non‑ASCII
+        // character, we must use a Unicode regex to get correct case‑folding.
+        let needs_unicode_for_case = flag_i && raw.chars().any(|c| !c.is_ascii());
 
-        re.map_err(|e| format!("invalid regular expression '{}': {}", raw, e))
+        if needs_unicode_for_case {
+            let re = if flag_i {
+                Regex::new(&format!("(?i){}", re_str))
+            } else {
+                unreachable!();
+            };
+            return re
+                .map(Pattern::Unicode)
+                .map_err(|e| format!("invalid regular expression '{}': {}", raw, e));
+        }
+
+        // Fast path: byte‑oriented regex, no UTF‑8 validation during matching.
+        let mut builder = regex::bytes::RegexBuilder::new(&re_str);
+        if flag_i {
+            builder.case_insensitive(true); // ASCII case‑insensitive is enough
+        }
+        let re = builder
+            .build()
+            .map_err(|e| format!("invalid regular expression '{}': {}", raw, e))?;
+        Ok(Pattern::Bytes(re))
     };
 
     // Collect patterns from repeated -e options.
@@ -121,7 +153,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
             has_empty_pattern = true;
         } else {
             match compile_pattern(pat) {
-                Ok(re) => regexes.push(re),
+                Ok(p) => patterns.push(p),
                 Err(msg) => {
                     eprintln!("grep: {msg}");
                     return 2;
@@ -130,7 +162,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    // Collect patterns from -f file (read and compile on the fly).
+    // Collect patterns from -f file.
     if let Some(f) = opts.get_str('f') {
         let file = match File::open(f) {
             Ok(f) => f,
@@ -153,12 +185,11 @@ fn grep_main(ctx: &mut Context) -> u8 {
                 }
             };
             if line.is_empty() {
-                // Empty line in a pattern file represents a null pattern.
                 has_empty_pattern = true;
                 continue;
             }
             match compile_pattern(&line) {
-                Ok(re) => regexes.push(re),
+                Ok(p) => patterns.push(p),
                 Err(msg) => {
                     eprintln!("grep: {msg}");
                     return 2;
@@ -169,7 +200,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
 
     // If no -e/-f were given, the first positional argument is the pattern.
     let mut args_iter = ctx.optargs.iter().map(|s| s.as_str());
-    if regexes.is_empty() && !has_empty_pattern {
+    if patterns.is_empty() && !has_empty_pattern {
         let pattern = match args_iter.next() {
             Some(p) => p,
             None => {
@@ -178,7 +209,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
             }
         };
         match compile_pattern(pattern) {
-            Ok(re) => regexes.push(re),
+            Ok(p) => patterns.push(p),
             Err(msg) => {
                 eprintln!("grep: {msg}");
                 return 2;
@@ -194,17 +225,14 @@ fn grep_main(ctx: &mut Context) -> u8 {
     let mut found_any = false;
     let mut has_error = false;
 
-    // Use a buffered stdout lock for all output.
     let stdout = std::io::stdout();
     let mut writer = BufWriter::new(stdout.lock());
 
     for &file in &files {
         if flag_r && file != "-" {
-            // Recursive mode: walk the directory tree lazily, processing each
-            // file as it is discovered — no upfront collection into a Vec.
             let result = grep_recursive(
                 file,
-                &regexes,
+                &patterns,
                 has_empty_pattern,
                 flag_v,
                 flag_n,
@@ -234,10 +262,9 @@ fn grep_main(ctx: &mut Context) -> u8 {
                 }
             }
         } else {
-            // Single file or stdin.
             match grep_file(
                 file,
-                &regexes,
+                &patterns,
                 has_empty_pattern,
                 flag_v,
                 flag_n,
@@ -270,7 +297,6 @@ fn grep_main(ctx: &mut Context) -> u8 {
         }
     }
 
-    // Flush writer (important!)
     writer.flush().ok();
 
     if has_error {
@@ -289,7 +315,7 @@ fn grep_main(ctx: &mut Context) -> u8 {
 /// Returns `Ok(true)` if the caller should exit early (e.g. `-q` found a match).
 fn grep_recursive(
     dir: &str,
-    regexes: &[Regex],
+    patterns: &[Pattern],
     has_empty_pattern: bool,
     flag_v: bool,
     flag_n: bool,
@@ -327,11 +353,10 @@ fn grep_recursive(
         };
 
         if meta.is_dir() {
-            // Recurse into subdirectory.
             let sub_path = path.to_str().unwrap_or_default();
             let early = grep_recursive(
                 sub_path,
-                regexes,
+                patterns,
                 has_empty_pattern,
                 flag_v,
                 flag_n,
@@ -354,7 +379,7 @@ fn grep_recursive(
             let file_path = path.to_str().unwrap_or_default();
             match grep_file(
                 file_path,
-                regexes,
+                patterns,
                 has_empty_pattern,
                 flag_v,
                 flag_n,
@@ -385,7 +410,6 @@ fn grep_recursive(
                 return Ok(true);
             }
         }
-        // Symlinks and other special file types are silently skipped.
     }
 
     Ok(false)
@@ -394,10 +418,14 @@ fn grep_recursive(
 /// Search a single file (or stdin when `file == "-"`) and print matches
 /// according to the active flags.
 ///
+/// This function reads raw bytes and avoids UTF‑8 validation unless a
+/// Unicode pattern forces it.  For the common case (ASCII patterns,
+/// no `-P`, no `-i` with non‑ASCII) no validation is performed at all.
+///
 /// Returns `Ok(true)` if at least one line matched.
 fn grep_file(
     file: &str,
-    regexes: &[Regex],
+    patterns: &[Pattern],
     has_empty_pattern: bool,
     flag_v: bool,
     flag_n: bool,
@@ -429,26 +457,44 @@ fn grep_file(
     let mut found = false;
     let show_name = (multiple && !flag_h) || flag_H;
 
-    // Reusable line buffer – avoids allocating a new String for every line.
-    let mut line_buf = String::with_capacity(256);
+    // Reusable byte buffer – avoids allocating for every line.
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
     let mut line_number = 0usize;
 
     loop {
-        line_buf.clear();
-        let n = reader.read_line(&mut line_buf).map_err(|e| e.to_string())?;
+        buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
         line_number += 1;
 
-        // Remove trailing newline for accurate output if needed.
-        let line = if line_buf.ends_with('\n') {
-            &line_buf[..line_buf.len() - 1]
+        // Strip the trailing newline for matching.
+        let line_bytes = if buf.ends_with(b"\n") {
+            &buf[..buf.len() - 1]
         } else {
-            &line_buf[..]
+            &buf[..]
         };
 
-        let matched = has_empty_pattern || regexes.iter().any(|r| r.is_match(line));
+        // Determine whether the line matches any pattern.
+        let matched = if has_empty_pattern {
+            true
+        } else {
+            patterns.iter().any(|pat| match pat {
+                Pattern::Bytes(re) => re.is_match(line_bytes),
+                Pattern::Unicode(re) => {
+                    // Only when a Unicode pattern is present do we pay
+                    // the cost of UTF‑8 validation.  Invalid sequences
+                    // are treated as non‑matching.
+                    std::str::from_utf8(line_bytes)
+                        .map(|s| re.is_match(s))
+                        .unwrap_or(false)
+                }
+            })
+        };
+
         let is_match = if flag_v { !matched } else { matched };
 
         if is_match {
@@ -464,8 +510,6 @@ fn grep_file(
                 return Ok(true);
             }
 
-            // When -L is active, suppress normal output; the filename will be
-            // printed only if no match was found throughout the entire file.
             if flag_L {
                 continue;
             }
@@ -474,8 +518,7 @@ fn grep_file(
                 continue;
             }
 
-            // Build prefix efficiently without allocating a new String
-            // for the common case where no prefix is needed.
+            // Print prefix and the raw line bytes.
             if show_name || flag_n {
                 if show_name {
                     write!(writer, "{}:", file).map_err(|e| e.to_string())?;
@@ -483,8 +526,12 @@ fn grep_file(
                 if flag_n {
                     write!(writer, "{}:", line_number).map_err(|e| e.to_string())?;
                 }
+                writer.write_all(line_bytes).map_err(|e| e.to_string())?;
+                writeln!(writer).map_err(|e| e.to_string())?;
+            } else {
+                writer.write_all(line_bytes).map_err(|e| e.to_string())?;
+                writeln!(writer).map_err(|e| e.to_string())?;
             }
-            writeln!(writer, "{}", line).map_err(|e| e.to_string())?;
         }
     }
 
