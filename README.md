@@ -54,7 +54,7 @@ RustyBox continues to improve with each release. Below are the latest measuremen
 - The gap to GNU in `grep` and `wc -l` has significantly narrowed compared to v0.1.1.
 - All of this is achieved while using **standard POSIX libc interfaces**, making RustyBox portable to non‑Linux systems without sacrificing performance.
 
-> When using `rbsh` — shell of RustyBox — performance can be even higher. Since `rbsh` (When launched via `rustybox sh rustybox`, the rustybox utilities are used as built-ins.) executes RustyBox utilities as built-in commands (without process spawning and `exec` overhead), pipelines and command sequences avoid the fork/exec penalty.
+`sh` and built-in shell commands are no longer compiled by default. `rbsh` is not suitable for serious use.
 
 ## License
 

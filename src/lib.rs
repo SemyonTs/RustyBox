@@ -17,4 +17,6 @@ pub mod commands;
 pub mod context;
 pub mod flags;
 pub mod registry;
+
+#[cfg(feature = "UNSTABLE_SH")]
 pub mod sh;
